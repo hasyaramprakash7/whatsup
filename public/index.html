@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>WhatsApp Real Estate Engine</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <link rel="stylesheet" href="styles.css" />
+</head>
+<body>
+  <header>
+    <h1>🏢 WhatsApp Real Estate Engine</h1>
+    <span id="health" class="badge">checking...</span>
+  </header>
+
+  <main>
+    <!-- 1. ONBOARD TENANT -->
+    <section class="card">
+      <h2>1. Onboard a Tenant</h2>
+      <form id="tenant-form">
+        <div class="grid">
+          <label>Business Name <input name="businessName" required value="Aparna Constructions" /></label>
+          <label>Phone Number ID <input name="phoneNumberId" required value="100234567890123" /></label>
+          <label>WABA ID <input name="wabaId" required value="900234567890123" /></label>
+          <label>Access Token <input name="accessToken" required placeholder="EAAxxx..." /></label>
+          <label>Admin Notification Phone <input name="adminNotificationPhone" required value="919876543210" /></label>
+          <label>Project Name <input name="projectName" required value="Aparna CyberHeights" /></label>
+          <label>Latitude <input name="latitude" type="number" step="any" required value="17.4435" /></label>
+          <label>Longitude <input name="longitude" type="number" step="any" required value="78.3772" /></label>
+          <label>Tier (0–3) <input name="tier" type="number" min="0" max="3" value="0" /></label>
+          <label class="span-2">Site Address <input name="siteAddress" required value="Financial District, Nanakramguda, Hyderabad" /></label>
+          <label class="span-2 file-input-label">Brochure PDF (Uploads to Cloudflare R2 on save)
+            <input type="file" id="brochure-file" accept="application/pdf" />
+          </label>
+        </div>
+        <button type="submit" class="btn-primary">Create Tenant</button>
+        <p id="tenant-msg" class="msg"></p>
+      </form>
+    </section>
+
+    <!-- 2. ACTIVE TENANTS -->
+    <section class="card">
+      <div class="card-header">
+        <h2>2. Active Tenants</h2>
+        <button id="refresh-tenants" class="btn-secondary">Refresh</button>
+      </div>
+      <div id="tenants" class="list">
+        <em>Loading tenants...</em>
+      </div>
+    </section>
+
+    <!-- 3. UPLOAD CSV & BROADCAST -->
+    <section class="card">
+      <h2>3. Upload CSV & Broadcast</h2>
+      <form id="upload-form">
+        <div class="grid">
+          <label>Select Tenant
+            <select id="tenant-select" required></select>
+          </label>
+          <label>CSV File (columns: phone, name)
+            <input type="file" id="csv-file" accept=".csv" required />
+          </label>
+        </div>
+        <button type="submit" class="btn-primary">Upload & Broadcast</button>
+        <p id="upload-msg" class="msg"></p>
+      </form>
+    </section>
+
+    <!-- 4. QUEUE STATUS -->
+    <section class="card">
+      <div class="card-header">
+        <h2>4. Broadcast Queue Status</h2>
+        <button id="refresh-stats" class="btn-secondary">Refresh Stats</button>
+      </div>
+      <div id="queue-stats" class="list stats-grid">
+        <em>Click refresh to load queue metrics.</em>
+      </div>
+    </section>
+
+    <!-- 5. LEADS -->
+    <section class="card">
+      <h2>5. Live Leads</h2>
+      <div id="leads" class="list table-container">
+        Select a tenant above to view leads.
+      </div>
+    </section>
+
+    <!-- 6. SYSTEM LOGS -->
+    <section class="card log-card">
+      <div class="card-header">
+        <h2>🖥️ System Execution Logs (Saved)</h2>
+        <button id="clear-logs" class="btn-secondary">Clear Logs</button>
+      </div>
+      <div id="log-console" class="console">
+        <!-- Logs will be injected here by JS -->
+      </div>
+    </section>
+  </main>
+
+  <script src="/app.js"></script>
+</body>
+</html>
