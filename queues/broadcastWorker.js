@@ -41,10 +41,10 @@ async function main() {
 
     const client = new MetaApiClient(tenant.accessToken, tenant.phoneNumberId);
 
-    // DB Update before sending
+    // DB Update before sending. Status is only set on insert so an existing lead keeps its progress.
     await Lead.findOneAndUpdate(
       { tenantId: tenant._id, phone },
-      { $set: { name: customerName, status: 'BROADCAST_SENT', lastBroadcastAt: new Date() }, $setOnInsert: { tenantId: tenant._id, phone } },
+      { $set: { name: customerName, lastBroadcastAt: new Date() }, $setOnInsert: { tenantId: tenant._id, phone, status: 'BROADCAST_SENT' } },
       { upsert: true, new: true, setDefaultsOnInsert: true }
     ).catch((err) => {
       if (err.code !== 11000) throw err;

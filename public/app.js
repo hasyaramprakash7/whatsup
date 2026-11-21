@@ -370,7 +370,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 <td>${escapeHtml(l.configuration)}</td>
                 <td>${escapeHtml(l.budget)}</td>
                 <td>${escapeHtml(l.visitSlot || '—')}</td>
-                <td><span class="pill ${l.status.toLowerCase()}">${escapeHtml(l.status)}</span></td>
+                <td><span class="pill ${l.status.toLowerCase()}">${escapeHtml(l.status)}</span>${l.adminAlertStatus === 'FAILED' ? ' <span class="pill cold" title="The WhatsApp alert to the admin phone could not be sent">alert failed</span>' : ''}</td>
               </tr>
             `).join('')}
           </tbody>
