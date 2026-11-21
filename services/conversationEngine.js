@@ -3,6 +3,9 @@ const Lead = require('../models/Lead');
 const MetaApiClient = require('./metaApiClient');
 const logger = require('../utils/logger');
 const { buildVisitSlots, parseSlotId, formatSlotLong } = require('../utils/visitSlots');
+const { getBotContent, fill } = require('./botContent');
+const { outboundRecorder } = require('./chatLog');
+const { publish } = require('./realtime');
 
 const SESSION_TTL = 86400;
 // Re-ask a question this many times when the lead types instead of tapping, then hand off to a human.
@@ -11,30 +14,43 @@ const MAX_UNEXPECTED_REPLIES = 2;
 // Free-form texts only reach the admin if they messaged the business number in the last 24h.
 // An approved template is delivered at any time. Expected body variables (no line breaks allowed in values):
 //   {{1}} alert headline, {{2}} lead name, {{3}} lead phone, {{4}} details
-const ADMIN_ALERT_TEMPLATE = process.env.ADMIN_ALERT_TEMPLATE_NAME || '';
-const ADMIN_ALERT_TEMPLATE_LANG = process.env.ADMIN_ALERT_TEMPLATE_LANG || 'en';
-if (!ADMIN_ALERT_TEMPLATE) {
-  logger.warn('[Admin Alerts] ADMIN_ALERT_TEMPLATE_NAME is not set — admin alerts go out as plain text, which WhatsApp only delivers if the admin messaged the business number in the last 24h.');
+// Each vendor can set their own template in the dashboard; these .env values are the fallback.
+const ENV_ADMIN_TEMPLATE = process.env.ADMIN_ALERT_TEMPLATE_NAME || '';
+const ENV_ADMIN_TEMPLATE_LANG = process.env.ADMIN_ALERT_TEMPLATE_LANG || 'en';
+if (!ENV_ADMIN_TEMPLATE) {
+  logger.warn('[Admin Alerts] ADMIN_ALERT_TEMPLATE_NAME is not set — vendors without their own alert template get plain-text alerts, which WhatsApp only delivers if the admin messaged the business number in the last 24h.');
 }
 
-const CONFIG_OPTIONS = {
-  CONF_2BHK: { label: '2 BHK', title: '2 BHK (1250 sq.ft)' },
-  CONF_3BHK: { label: '3 BHK', title: '3 BHK (1850 sq.ft)' },
-  CONF_VILLA: { label: '4 BHK / Villa', title: '4 BHK / Villa' },
-};
-
-const BUDGET_OPTIONS = {
-  BUDGET_TIER_1: { label: '₹85 Lakh - ₹1.2 Cr', description: 'Standard Floors' },
-  BUDGET_TIER_2: { label: '₹1.2 Cr - ₹1.8 Cr', description: 'Lake Facing & High Floors' },
-  BUDGET_TIER_3: { label: '₹1.8 Cr+', description: 'Corner Units & Penthouses' },
-};
-
 const OPT_OUT_TEXTS = ['stop', 'unsubscribe', 'opt out', 'optout', 'not interested'];
+
+/** Ignores case, punctuation and extra spaces, so "Stop." or "NOT interested!!" also opt out. */
+function isOptOutMessage(message, interactiveId) {
+  if (interactiveId === 'NOT_INTERESTED') return true;
+  const text = (message?.text?.body || '').toLowerCase().replace(/[^a-z\s]/g, ' ').replace(/\s+/g, ' ').trim();
+  return OPT_OUT_TEXTS.includes(text);
+}
+
+function interactiveIdOf(message) {
+  if (message?.type === 'interactive') {
+    if (message.interactive?.type === 'button_reply') return message.interactive.button_reply.id;
+    if (message.interactive?.type === 'list_reply') return message.interactive.list_reply.id;
+  } else if (message?.type === 'button') {
+    return message.button?.payload || null;
+  }
+  return null;
+}
 
 class ConversationEngine {
   constructor(tenant) {
     this.tenant = tenant;
-    this.client = new MetaApiClient(tenant.accessToken, tenant.phoneNumberId);
+    this.content = getBotContent(tenant);
+    // Messages to leads are logged to the Inbox; admin alerts are not part of any lead's chat.
+    this.client = new MetaApiClient(tenant.accessToken, tenant.phoneNumberId, { onSent: outboundRecorder(tenant._id, 'bot') });
+    this.adminClient = new MetaApiClient(tenant.accessToken, tenant.phoneNumberId);
+  }
+
+  static isOptOut(message) {
+    return isOptOutMessage(message, interactiveIdOf(message));
   }
 
   sessionKey(phone) {
@@ -45,19 +61,30 @@ class ConversationEngine {
     return `${sessionKey}:unexpected`;
   }
 
+  /** Placeholder values for bot texts. */
+  vars(extra = {}) {
+    const p = this.tenant.projectDetails || {};
+    return { project: p.projectName, address: p.siteAddress, adminPhone: this.tenant.adminNotificationPhone, ...extra };
+  }
+
+  text(key, extra) {
+    return fill(this.content[key], this.vars(extra));
+  }
+
   async upsertLead(phone, patch) {
+    let lead;
     try {
-      return await Lead.findOneAndUpdate(
+      lead = await Lead.findOneAndUpdate(
         { tenantId: this.tenant._id, phone },
         { $set: patch },
         { upsert: true, new: true, setDefaultsOnInsert: true }
       );
     } catch (err) {
-      if (err.code === 11000) {
-        return Lead.findOneAndUpdate({ tenantId: this.tenant._id, phone }, { $set: patch }, { new: true });
-      }
-      throw err;
+      if (err.code !== 11000) throw err;
+      lead = await Lead.findOneAndUpdate({ tenantId: this.tenant._id, phone }, { $set: patch }, { new: true });
     }
+    if (lead) publish(this.tenant._id, 'lead:update', { lead: lead.toObject ? lead.toObject() : lead });
+    return lead;
   }
 
   async handleInboundMessage(fromPhone, message) {
@@ -65,23 +92,14 @@ class ConversationEngine {
     let state = (await redis.get(key)) || 'INIT';
     logger.info(`[State Machine] +${fromPhone} | Current State: ${state} | Message Type: ${message.type}`);
 
-    let interactiveId = null;
-    if (message.type === 'interactive') {
-      if (message.interactive?.type === 'button_reply') interactiveId = message.interactive.button_reply.id;
-      else if (message.interactive?.type === 'list_reply') interactiveId = message.interactive.list_reply.id;
-    } else if (message.type === 'button') {
-      interactiveId = message.button?.payload || null;
-    }
+    const interactiveId = interactiveIdOf(message);
 
-    const textBody = (message.text?.body || '').trim().toLowerCase();
-    const isOptOutText = OPT_OUT_TEXTS.includes(textBody);
-
-    if (interactiveId === 'NOT_INTERESTED' || isOptOutText) {
-      logger.info(`[State Machine] +${fromPhone} opted out (Payload: ${interactiveId}, Text: ${textBody})`);
+    if (isOptOutMessage(message, interactiveId)) {
+      logger.info(`[State Machine] +${fromPhone} opted out (Payload: ${interactiveId}, Text: ${message.text?.body || ''})`);
       await this.upsertLead(fromPhone, { status: 'COLD' });
       await redis.del(key, this.unexpectedKey(key));
       try {
-        await this.client.sendTextMessage(fromPhone, 'Understood. We have opted you out of further updates for this project. Have a great day! 🙏');
+        await this.client.sendTextMessage(fromPhone, this.text('optOutText'));
       } catch (err) {
         logger.warn(`[Opt-Out Ack Failed] +${fromPhone}: ${err.message}`);
       }
@@ -105,7 +123,7 @@ class ConversationEngine {
           return await this.stepHandleSlot(fromPhone, interactiveId, key, message);
         case 'COMPLETED':
           logger.debug(`[State Machine] +${fromPhone} is already COMPLETED. Sending standard reply.`);
-          return await this.client.sendTextMessage(fromPhone, `Our Property Consultant is reviewing your visit file for *${this.tenant.projectDetails.projectName}*. For immediate help, call: +${this.tenant.adminNotificationPhone}.`);
+          return await this.client.sendTextMessage(fromPhone, this.text('completedText'));
         default:
           logger.warn(`[State Machine] +${fromPhone} hit unknown state '${state}'. Resetting to INIT.`);
           await redis.del(key);
@@ -114,7 +132,7 @@ class ConversationEngine {
     } catch (err) {
       logger.error(`[State Machine] Error during step execution for +${fromPhone}: ${err.message}`);
       try {
-        await this.client.sendTextMessage(fromPhone, 'We hit a small snag. Please reply *Hi* to restart, or our team will reach out shortly.');
+        await this.client.sendTextMessage(fromPhone, this.text('errorText'));
       } catch (_) {}
     }
   }
@@ -122,22 +140,27 @@ class ConversationEngine {
   // ---- Questions (sent fresh, or re-sent after an unexpected reply) ----
 
   askConfiguration(fromPhone) {
-    const { projectName } = this.tenant.projectDetails;
-    return this.client.sendQuickReplies(fromPhone, `Welcome to *${projectName}*! Which residential configuration are you interested in?`,
-      Object.entries(CONFIG_OPTIONS).map(([id, o]) => ({ id, title: o.title })));
+    const options = this.content.configOptions;
+    const body = this.text('welcomeText');
+    // WhatsApp allows at most 3 reply buttons; more options go in a list.
+    if (options.length <= 3) {
+      return this.client.sendQuickReplies(fromPhone, body, options.map((o) => ({ id: o.id, title: o.title || o.label })));
+    }
+    return this.client.sendListMenu(fromPhone, this.text('configListHeader'), body, this.text('configListButton'), [
+      { title: this.text('configSectionTitle'), rows: options.map((o) => ({ id: o.id, title: o.title || o.label })) },
+    ]);
   }
 
   async askBudget(fromPhone, configLabel) {
-    const intro = configLabel ? `You selected *${configLabel}*. ` : '';
-    return this.client.sendListMenu(fromPhone, 'Select Your Budget', `${intro}Please select your comfortable investment range:`, 'View Budget Tiers', [
-      { title: 'Investment Bracket', rows: Object.entries(BUDGET_OPTIONS).map(([id, o]) => ({ id, title: o.label, description: o.description })) },
+    const body = this.text('budgetText', { configuration: configLabel || 'your home' });
+    return this.client.sendListMenu(fromPhone, this.text('budgetHeader', { configuration: configLabel || 'your home' }), body, this.text('budgetButtonLabel'), [
+      { title: this.text('budgetSectionTitle'), rows: this.content.budgetOptions.map((o) => ({ id: o.id, title: o.title || o.label, ...(o.description ? { description: o.description } : {}) })) },
     ]);
   }
 
   askVisitSlot(fromPhone) {
-    const slots = buildVisitSlots();
-    return this.client.sendQuickReplies(fromPhone, 'Early-bird pricing is locked via an in-person Experience Centre visit. Select a convenient time slot:',
-      slots.map((s) => ({ id: s.id, title: s.title })));
+    const slots = buildVisitSlots(new Date(), 3, this.content.slotPlan);
+    return this.client.sendQuickReplies(fromPhone, this.text('slotText'), slots.map((s) => ({ id: s.id, title: s.title })));
   }
 
   // ---- Steps ----
@@ -151,7 +174,7 @@ class ConversationEngine {
   }
 
   async stepHandleConfig(fromPhone, interactiveId, key, message) {
-    const option = CONFIG_OPTIONS[interactiveId];
+    const option = this.content.configOptions.find((o) => o.id === interactiveId);
     if (!option) return this.handleUnexpectedReply(fromPhone, key, message, () => this.askConfiguration(fromPhone));
 
     logger.info(`[State Machine] +${fromPhone} selected config: ${option.label}. Transitioning to AWAITING_BUDGET.`);
@@ -162,7 +185,7 @@ class ConversationEngine {
   }
 
   async stepHandleBudget(fromPhone, interactiveId, key, message) {
-    const option = BUDGET_OPTIONS[interactiveId];
+    const option = this.content.budgetOptions.find((o) => o.id === interactiveId);
     if (!option) {
       return this.handleUnexpectedReply(fromPhone, key, message, async () => {
         const lead = await Lead.findOne({ tenantId: this.tenant._id, phone: fromPhone }).select('configuration').lean();
@@ -173,12 +196,15 @@ class ConversationEngine {
 
     logger.info(`[State Machine] +${fromPhone} selected budget: ${option.label}. Transitioning to AWAITING_SLOT.`);
     await redis.del(this.unexpectedKey(key));
-    await this.upsertLead(fromPhone, { budget: option.label, status: 'QUALIFIED' });
+    const lead = await this.upsertLead(fromPhone, { budget: option.label, status: 'QUALIFIED' });
 
-    if (this.tenant.projectDetails.brochurePdfUrl) {
+    const { brochurePdfUrl, projectName } = this.tenant.projectDetails;
+    if (brochurePdfUrl) {
       logger.debug(`[State Machine] Sending brochure document to +${fromPhone} from R2 URL.`);
       try {
-        await this.client.sendDocument(fromPhone, this.tenant.projectDetails.brochurePdfUrl, `${this.tenant.projectDetails.projectName.replace(/\s+/g, '_')}_Masterplan.pdf`, `Here is the verified master plan and floor blueprint for *${this.tenant.projectDetails.projectName}*.`);
+        const fileName = `${this.text('brochureFileName').replace(/\.pdf$/i, '').replace(/[\\/:*?"<>|]+/g, '').trim() || projectName}.pdf`;
+        await this.client.sendDocument(fromPhone, brochurePdfUrl, fileName,
+          this.text('brochureCaption', { name: lead?.name, configuration: lead?.configuration, budget: option.label }));
       } catch (err) {
         logger.warn(`[Brochure send failed] +${fromPhone}: ${err.message}`);
       }
@@ -196,7 +222,7 @@ class ConversationEngine {
 
     if (visitAt.getTime() <= Date.now()) {
       logger.info(`[State Machine] +${fromPhone} tapped a slot that has passed (${visitAt.toISOString()}). Re-offering slots.`);
-      await this.client.sendTextMessage(fromPhone, 'That time slot has already passed. Here are the next available slots:');
+      await this.client.sendTextMessage(fromPhone, this.text('slotPassedText'));
       return this.askVisitSlot(fromPhone);
     }
 
@@ -205,15 +231,18 @@ class ConversationEngine {
     await redis.del(this.unexpectedKey(key));
 
     const updated = await this.upsertLead(fromPhone, { visitSlot, visitAt, status: 'VISIT_CONFIRMED' });
+    const p = this.tenant.projectDetails;
 
     try {
       logger.debug(`[State Machine] Sending location pin to +${fromPhone}.`);
-      await this.client.sendLocation(fromPhone, this.tenant.projectDetails.latitude, this.tenant.projectDetails.longitude, this.tenant.projectDetails.projectName, this.tenant.projectDetails.siteAddress);
+      await this.client.sendLocation(fromPhone, p.latitude, p.longitude, p.projectName, p.siteAddress);
     } catch (err) {
       logger.warn(`[Location send failed] +${fromPhone}: ${err.message}`);
     }
 
-    await this.client.sendTextMessage(fromPhone, `✅ *VIP Site Visit Pass Confirmed!*\n\n• *Project:* ${this.tenant.projectDetails.projectName}\n• *Configuration:* ${updated.configuration}\n• *Scheduled Slot:* ${visitSlot}\n• *Site Address:* ${this.tenant.projectDetails.siteAddress}\n\nOur Senior Property Advisor will welcome you at the reception. Show this message at the security gate for reserved parking.`);
+    await this.client.sendTextMessage(fromPhone, this.text('confirmationText', {
+      name: updated.name, configuration: updated.configuration, budget: updated.budget, slot: visitSlot,
+    }));
 
     await this.notifyAdmin(updated, {
       headline: 'Site visit booked',
@@ -235,14 +264,13 @@ class ConversationEngine {
 
     if (count <= MAX_UNEXPECTED_REPLIES) {
       logger.info(`[State Machine] +${fromPhone} sent an unexpected ${message.type} reply (${count}/${MAX_UNEXPECTED_REPLIES}). Re-asking.`);
-      await this.client.sendTextMessage(fromPhone, 'Please tap one of the options below so we can help you faster 👇');
+      await this.client.sendTextMessage(fromPhone, this.text('nudgeText'));
       return reask();
     }
 
     if (count === MAX_UNEXPECTED_REPLIES + 1) {
       logger.info(`[State Machine] +${fromPhone} still not choosing an option. Handing off to a human.`);
-      const { projectName } = this.tenant.projectDetails;
-      await this.client.sendTextMessage(fromPhone, `No problem! A property consultant from *${projectName}* will contact you shortly. You can also call us on +${this.tenant.adminNotificationPhone}, or tap any option above whenever you're ready.`);
+      await this.client.sendTextMessage(fromPhone, this.text('handoffText'));
 
       const lead = (await Lead.findOne({ tenantId: this.tenant._id, phone: fromPhone })) || (await this.upsertLead(fromPhone, { status: 'ENGAGED' }));
       const said = this.describeMessage(message);
@@ -269,24 +297,34 @@ class ConversationEngine {
   /** Sends an alert to the tenant's admin phone and records on the lead whether it went out. */
   async notifyAdmin(lead, { headline, details, text }) {
     const to = this.tenant.adminNotificationPhone;
+    const templateName = this.tenant.templates?.adminAlertName || ENV_ADMIN_TEMPLATE;
+    const templateLang = this.tenant.templates?.adminAlertLanguage || ENV_ADMIN_TEMPLATE_LANG;
     let sent = false;
+    let messageId = null;
+    let error = null;
     try {
-      if (ADMIN_ALERT_TEMPLATE) {
-        logger.info(`[Admin Alert] Sending '${headline}' to +${to} via template '${ADMIN_ALERT_TEMPLATE}'.`);
+      let response;
+      if (templateName) {
+        logger.info(`[Admin Alert] Sending '${headline}' to +${to} via template '${templateName}'.`);
         // Template values may not be empty or contain line breaks.
         const params = [headline, lead.name, `+${lead.phone}`, details].map((v) => String(v || '-').replace(/\s+/g, ' ').trim() || '-');
-        await this.client.sendTemplate(to, ADMIN_ALERT_TEMPLATE, params, ADMIN_ALERT_TEMPLATE_LANG);
+        response = await this.adminClient.sendTemplate(to, templateName, params, templateLang);
       } else {
         logger.info(`[Admin Alert] Sending '${headline}' to +${to} as plain text.`);
-        await this.client.sendTextMessage(to, text);
+        response = await this.adminClient.sendTextMessage(to, text);
       }
       sent = true;
+      // Meta can still reject it later (e.g. outside the 24h window); the status webhook uses this id.
+      messageId = response?.messages?.[0]?.id || null;
     } catch (err) {
-      logger.error(`[Admin Alert] '${headline}' for +${lead.phone} could not be sent to +${to}: ${err.response?.data?.error?.message || err.message}`);
+      error = err.response?.data?.error?.message || err.message;
+      logger.error(`[Admin Alert] '${headline}' for +${lead.phone} could not be sent to +${to}: ${error}`);
     }
 
-    await Lead.updateOne({ _id: lead._id }, { $set: { adminAlertStatus: sent ? 'SENT' : 'FAILED', adminAlertAt: new Date() } })
+    const updated = await Lead.findOneAndUpdate({ _id: lead._id }, { $set: { adminAlertStatus: sent ? 'SENT' : 'FAILED', adminAlertAt: new Date(), adminAlertMessageId: messageId, adminAlertError: error } }, { new: true })
+      .lean()
       .catch((err) => logger.warn(`[Admin Alert] Could not record alert status: ${err.message}`));
+    if (updated) publish(this.tenant._id, 'lead:update', { lead: updated });
     return sent;
   }
 }

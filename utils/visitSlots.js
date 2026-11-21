@@ -10,12 +10,9 @@ function parseOffsetMinutes(value) {
 
 const OFFSET_MIN = parseOffsetMinutes(process.env.SITE_UTC_OFFSET || '+05:30');
 
-// Slot plan: tomorrow at 11 AM, then upcoming weekend slots, until 3 slots are offered.
-const FIRST_SLOT = { hour: 11, minute: 0 };
-const WEEKEND_SLOTS = [
-  { weekday: 6, hour: 16, minute: 0 }, // Saturday 4 PM
-  { weekday: 0, hour: 11, minute: 0 }, // Sunday 11 AM
-];
+// Default slot plan (vendors can change it in Bot Studio): tomorrow 11 AM, Saturday 4 PM, Sunday 11 AM.
+const DEFAULT_PLAN = [{ day: 'TOMORROW', time: '11:00' }, { day: 'SAT', time: '16:00' }, { day: 'SUN', time: '11:00' }];
+const WEEKDAY_INDEX = { SUN: 0, MON: 1, TUE: 2, WED: 3, THU: 4, FRI: 5, SAT: 6 };
 const MAX_DAYS_AHEAD = 60; // a tapped slot further out than this is treated as invalid
 
 const DAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
@@ -54,17 +51,28 @@ function formatSlotLong(at) {
   return `${DAYS_LONG[local.getUTCDay()]}, ${local.getUTCDate()} ${MONTHS[local.getUTCMonth()]} ${local.getUTCFullYear()} at ${formatTime(local, true)}`;
 }
 
-/** The next `count` visit slots as WhatsApp buttons: { id: 'SLOT_<epoch ms>', title, at }. */
-function buildVisitSlots(now = new Date(), count = 3) {
+/**
+ * The next visit slots as WhatsApp buttons: { id: 'SLOT_<epoch ms>', title, at }.
+ * Walks forward day by day from tomorrow and takes every plan rule that matches the day
+ * ('TOMORROW' only matches tomorrow), skipping duplicates, until `count` slots are found.
+ */
+function buildVisitSlots(now = new Date(), count = 3, plan = DEFAULT_PLAN) {
+  const rules = (Array.isArray(plan) && plan.length ? plan : DEFAULT_PLAN).map((r) => {
+    const [hour, minute] = String(r.time || '11:00').split(':').map(Number);
+    return { day: String(r.day || '').toUpperCase(), hour: hour || 0, minute: minute || 0 };
+  });
+  count = Math.min(count, rules.length) || 1;
   const today = toLocal(now);
   const [y, m, d] = [today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()];
-  const slots = [fromLocal(y, m, d + 1, FIRST_SLOT.hour, FIRST_SLOT.minute)];
+  const slots = [];
 
-  for (let i = 1; slots.length < count && i <= 14; i++) {
+  for (let i = 1; slots.length < count && i <= 21; i++) {
     const weekday = toLocal(fromLocal(y, m, d + i)).getUTCDay();
-    for (const s of WEEKEND_SLOTS) {
-      if (s.weekday !== weekday || slots.length >= count) continue;
-      const at = fromLocal(y, m, d + i, s.hour, s.minute);
+    for (const r of rules) {
+      if (slots.length >= count) break;
+      const matches = r.day === 'TOMORROW' ? i === 1 : WEEKDAY_INDEX[r.day] === weekday;
+      if (!matches) continue;
+      const at = fromLocal(y, m, d + i, r.hour, r.minute);
       if (!slots.some((x) => x.getTime() === at.getTime())) slots.push(at);
     }
   }

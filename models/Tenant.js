@@ -14,6 +14,16 @@ const tenantSchema = new mongoose.Schema({
     longitude: { type: Number, required: true },
     siteAddress: { type: String, required: true },
   },
+  // Bot Studio content (validated by services/botContent.js); null = use the defaults.
+  botContent: { type: mongoose.Schema.Types.Mixed, default: null },
+  // Meta-approved template names for this vendor's WhatsApp account; empty = use the .env defaults.
+  templates: {
+    broadcastName: { type: String, default: null },
+    broadcastLanguage: { type: String, default: null },
+    broadcastHasParams: { type: Boolean, default: null },
+    adminAlertName: { type: String, default: null },
+    adminAlertLanguage: { type: String, default: null },
+  },
   isActive: { type: Boolean, default: true },
 }, { timestamps: true });
 tenantSchema.set('toJSON', { transform: (_doc, ret) => { delete ret.accessToken; delete ret.apiKeyHash; delete ret.__v; return ret; } });

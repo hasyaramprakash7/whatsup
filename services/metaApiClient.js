@@ -4,6 +4,8 @@ const logger = require('../utils/logger');
 
 // Meta retires Graph API versions roughly two years after release; override via .env when bumping.
 const GRAPH_API_VERSION = process.env.META_GRAPH_API_VERSION || 'v25.0';
+// Only for local testing against a fake WhatsApp API; never set this in production.
+const GRAPH_BASE_URL = (process.env.META_GRAPH_BASE_URL || 'https://graph.facebook.com').replace(/\/$/, '');
 
 const http = axios.create({ timeout: 15000 });
 
@@ -20,10 +22,12 @@ axiosRetry(http, {
 });
 
 class MetaApiClient {
-  constructor(accessToken, phoneNumberId) {
+  /** onSent(payload, responseData) runs after each successful send, e.g. to log it to the Inbox. */
+  constructor(accessToken, phoneNumberId, { onSent } = {}) {
     this.accessToken = accessToken;
     this.phoneNumberId = phoneNumberId;
-    this.endpoint = `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`;
+    this.onSent = onSent || null;
+    this.endpoint = `${GRAPH_BASE_URL}/${GRAPH_API_VERSION}/${phoneNumberId}/messages`;
   }
 
   headers() {
@@ -35,6 +39,7 @@ class MetaApiClient {
       logger.debug(`[MetaAPI] Sending ${context} to ${payload.to}...`);
       const res = await http.post(this.endpoint, payload, { headers: this.headers() });
       logger.info(`[MetaAPI] ${context} sent successfully to ${payload.to}. MsgID: ${res.data?.messages?.[0]?.id || 'N/A'}`);
+      if (this.onSent) await Promise.resolve(this.onSent(payload, res.data)).catch((e) => logger.warn(`[MetaAPI] onSent hook failed: ${e.message}`));
       return res.data;
     } catch (err) {
       const detail = err.response?.data?.error?.message || err.message;

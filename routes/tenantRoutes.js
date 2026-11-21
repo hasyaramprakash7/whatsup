@@ -9,5 +9,6 @@ router.get('/me', tenantController.whoAmI);
 router.post('/', requireAdmin, tenantValidationRules(), validate, tenantController.createTenant);
 router.get('/', asyncHandler(tenantController.getAllTenants));
 router.get('/:id', requireTenantAccess('id'), asyncHandler(tenantController.getTenantById));
+router.patch('/:id', requireTenantAccess('id'), asyncHandler(tenantController.updateTenant));
 router.post('/:id/rotate-key', requireAdmin, asyncHandler(tenantController.rotateApiKey));
 module.exports = router;

@@ -21,24 +21,28 @@ function extractKey(req) {
   return match ? match[1].trim() : null;
 }
 
+/** { role: 'admin' } | { role: 'tenant', tenantId, businessName } for a valid key, otherwise null. */
+async function resolveApiKey(key) {
+  if (!key || typeof key !== 'string') return null;
+  const adminKey = process.env.ADMIN_API_KEY;
+  if (adminKey && safeEqual(key, adminKey)) return { role: 'admin' };
+  if (key.startsWith(TENANT_KEY_PREFIX)) {
+    const tenant = await Tenant.findOne({ apiKeyHash: sha256(key) }).select('_id businessName isActive');
+    if (tenant && tenant.isActive) return { role: 'tenant', tenantId: String(tenant._id), businessName: tenant.businessName };
+  }
+  return null;
+}
+
 /** Resolves the caller to { role: 'admin' } or { role: 'tenant', tenantId }; 401 otherwise. */
 async function authenticate(req, res, next) {
   const key = extractKey(req);
   if (!key) return res.status(401).json({ success: false, error: 'Missing API key. Send "Authorization: Bearer <key>".' });
 
   try {
-    const adminKey = process.env.ADMIN_API_KEY;
-    if (adminKey && safeEqual(key, adminKey)) {
-      req.auth = { role: 'admin' };
+    const auth = await resolveApiKey(key);
+    if (auth) {
+      req.auth = auth;
       return next();
-    }
-
-    if (key.startsWith(TENANT_KEY_PREFIX)) {
-      const tenant = await Tenant.findOne({ apiKeyHash: sha256(key) }).select('_id businessName isActive');
-      if (tenant && tenant.isActive) {
-        req.auth = { role: 'tenant', tenantId: String(tenant._id), businessName: tenant.businessName };
-        return next();
-      }
     }
 
     logger.warn(`[Auth] Rejected invalid API key on ${req.method} ${req.originalUrl} from ${req.ip}`);
@@ -60,4 +64,4 @@ const requireTenantAccess = (paramName = 'tenantId') => (req, res, next) => {
   return res.status(403).json({ success: false, error: 'You do not have access to this tenant.' });
 };
 
-module.exports = { authenticate, requireAdmin, requireTenantAccess, generateTenantApiKey };
+module.exports = { authenticate, resolveApiKey, requireAdmin, requireTenantAccess, generateTenantApiKey };
