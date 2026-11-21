@@ -5,6 +5,7 @@ const connectDB = require('../config/db');
 const Tenant = require('../models/Tenant');
 const Lead = require('../models/Lead');
 const MetaApiClient = require('../services/metaApiClient');
+const sessionRedis = require('../config/redis');
 const logger = require('../utils/logger');
 const mongoose = require('mongoose');
 
@@ -53,6 +54,11 @@ async function main() {
     logger.info(`[Worker] 📤 Sending template '${TEMPLATE_NAME}' (${TEMPLATE_LANG}) to +${phone}...`);
     await client.sendTemplate(phone, TEMPLATE_NAME, params, TEMPLATE_LANG);
 
+    // A fresh broadcast starts a fresh conversation: drop any saved bot step (e.g. COMPLETED)
+    // so the lead's next reply begins the flow again. Key format matches ConversationEngine.sessionKey().
+    await sessionRedis.del(`session:${tenant._id}:${phone}`).catch((err) =>
+      logger.warn(`[Worker] Could not reset conversation state for +${phone}: ${err.message}`));
+
     logger.info(`[Worker] ✅ Job ${job.id} finished successfully for +${phone}.`);
     return { phone, deliveredAt: new Date().toISOString() };
   }, {
@@ -71,6 +77,7 @@ async function main() {
     logger.info(`[Worker] ${signal} received — draining queue and shutting down...`);
     await worker.close();
     await connection.quit();
+    await sessionRedis.quit();
     await mongoose.connection.close();
     logger.info('[Worker] Shutdown complete.');
     process.exit(0);
