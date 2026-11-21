@@ -10,11 +10,23 @@
   <header>
     <h1>🏢 WhatsApp Real Estate Engine</h1>
     <span id="health" class="badge">checking...</span>
+    <span id="whoami" class="badge"></span>
+    <button id="logout" class="btn-secondary" hidden>Log out</button>
   </header>
 
-  <main>
+  <!-- LOGIN -->
+  <section id="login-card" class="card login-card" hidden>
+    <h2>Sign in</h2>
+    <form id="login-form">
+      <label>API Key <input id="api-key" type="password" autocomplete="current-password" required placeholder="Admin key or client key (wre_...)" /></label>
+      <button type="submit" class="btn-primary">Sign in</button>
+      <p id="login-msg" class="msg"></p>
+    </form>
+  </section>
+
+  <main id="app" hidden>
     <!-- 1. ONBOARD TENANT -->
-    <section class="card">
+    <section class="card admin-only">
       <h2>1. Onboard a Tenant</h2>
       <form id="tenant-form">
         <div class="grid">
@@ -66,7 +78,7 @@
     </section>
 
     <!-- 4. QUEUE STATUS -->
-    <section class="card">
+    <section class="card admin-only">
       <div class="card-header">
         <h2>4. Broadcast Queue Status</h2>
         <button id="refresh-stats" class="btn-secondary">Refresh Stats</button>

@@ -17,6 +17,12 @@ const leadRoutes = require('./routes/leadRoutes');
 const uploadRoutes = require('./routes/uploadRoutes');
 const rateLimiter = require('./middleware/rateLimiter');
 const errorHandler = require('./middleware/errorHandler');
+const { authenticate } = require('./middleware/auth');
+
+if (!process.env.ADMIN_API_KEY || process.env.ADMIN_API_KEY.length < 32) {
+  logger.error('[Server] ADMIN_API_KEY is missing or shorter than 32 characters. Refusing to start.');
+  process.exit(1);
+}
 
 const app = express();
 logger.info('[Server] Booting application...');
@@ -35,9 +41,9 @@ app.use(express.static(path.join(__dirname, 'public')));
 connectDB();
 
 app.use('/webhook', webhookRoutes);
-app.use('/api/tenants', rateLimiter, tenantRoutes);
-app.use('/api/leads', rateLimiter, leadRoutes);
-app.use('/api/uploads', rateLimiter, uploadRoutes);
+app.use('/api/tenants', rateLimiter, authenticate, tenantRoutes);
+app.use('/api/leads', rateLimiter, authenticate, leadRoutes);
+app.use('/api/uploads', rateLimiter, authenticate, uploadRoutes);
 
 app.get('/health', (_req, res) => res.json({ status: 'OK', timestamp: new Date().toISOString() }));
 app.get('/', (_req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));

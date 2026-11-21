@@ -8,6 +8,11 @@ const PUBLIC_BASE_URL = (process.env.R2_PUBLIC_BASE_URL || '').replace(/\/$/, ''
 
 async function uploadBrochure({ localPath, originalName, contentType, tenantId }) {
   const safeName = String(originalName || 'brochure.pdf').replace(/[^a-zA-Z0-9._-]/g, '_').replace(/_+/g, '_').slice(-180);
+  if (!r2Client) {
+    const err = new Error('Brochure uploads are disabled: Cloudflare R2 is not configured on the server');
+    err.status = 503;
+    throw err;
+  }
   const key = `brochures/${tenantId}/${Date.now()}_${safeName}`;
 
   logger.info(`[R2] Reading file ${localPath} for upload...`);
@@ -28,7 +33,7 @@ async function uploadBrochure({ localPath, originalName, contentType, tenantId }
 }
 
 async function deleteByKey(key) {
-  if (!key) return;
+  if (!key || !r2Client) return;
   try {
     logger.info(`[R2] Deleting old object: ${key}`);
     await r2Client.send(new DeleteObjectCommand({ Bucket: BUCKET, Key: key }));
@@ -39,7 +44,7 @@ async function deleteByKey(key) {
 }
 
 function keyFromPublicUrl(publicUrl) {
-  if (!publicUrl || !publicUrl.startsWith(PUBLIC_BASE_URL + '/')) return null;
+  if (!publicUrl || !PUBLIC_BASE_URL || !publicUrl.startsWith(PUBLIC_BASE_URL + '/')) return null;
   return publicUrl.slice(PUBLIC_BASE_URL.length + 1);
 }
 

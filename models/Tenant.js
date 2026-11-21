@@ -4,6 +4,7 @@ const tenantSchema = new mongoose.Schema({
   phoneNumberId: { type: String, required: true, unique: true, index: true },
   wabaId: { type: String, required: true },
   accessToken: { type: String, required: true, select: false },
+  apiKeyHash: { type: String, select: false, index: { unique: true, sparse: true } },
   adminNotificationPhone: { type: String, required: true, trim: true },
   tier: { type: Number, default: 0, min: 0, max: 3 },
   projectDetails: {
@@ -15,5 +16,5 @@ const tenantSchema = new mongoose.Schema({
   },
   isActive: { type: Boolean, default: true },
 }, { timestamps: true });
-tenantSchema.set('toJSON', { transform: (_doc, ret) => { delete ret.accessToken; delete ret.__v; return ret; } });
+tenantSchema.set('toJSON', { transform: (_doc, ret) => { delete ret.accessToken; delete ret.apiKeyHash; delete ret.__v; return ret; } });
 module.exports = mongoose.model('Tenant', tenantSchema);

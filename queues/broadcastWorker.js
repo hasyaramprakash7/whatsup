@@ -10,6 +10,12 @@ const mongoose = require('mongoose');
 
 const BROADCAST_QUEUE = 'broadcast';
 
+// Override in .env to test with another approved template, e.g. Meta's hello_world (en_US, no variables).
+const TEMPLATE_NAME = process.env.BROADCAST_TEMPLATE_NAME || 'realestate_reengage_v1';
+const TEMPLATE_LANG = process.env.BROADCAST_TEMPLATE_LANG || 'en';
+// realestate_reengage_v1 takes {{1}}=customer name, {{2}}=project name; set to false for templates without variables.
+const TEMPLATE_HAS_PARAMS = (process.env.BROADCAST_TEMPLATE_PARAMS || 'true').toLowerCase() !== 'false';
+
 async function main() {
   await connectDB();
   const connection = createRedisConnection('broadcast-worker');
@@ -43,8 +49,9 @@ async function main() {
       if (err.code !== 11000) throw err;
     });
 
-    logger.info(`[Worker] 📤 Sending template 'realestate_reengage_v1' to +${phone}...`);
-    await client.sendTemplate(phone, 'realestate_reengage_v1', customerName, tenant.projectDetails.projectName);
+    const params = TEMPLATE_HAS_PARAMS ? [customerName, tenant.projectDetails.projectName] : [];
+    logger.info(`[Worker] 📤 Sending template '${TEMPLATE_NAME}' (${TEMPLATE_LANG}) to +${phone}...`);
+    await client.sendTemplate(phone, TEMPLATE_NAME, params, TEMPLATE_LANG);
 
     logger.info(`[Worker] ✅ Job ${job.id} finished successfully for +${phone}.`);
     return { phone, deliveredAt: new Date().toISOString() };

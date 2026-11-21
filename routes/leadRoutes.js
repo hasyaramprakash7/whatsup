@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const router = express.Router();
 const leadController = require('../controllers/leadController');
+const { requireAdmin, requireTenantAccess } = require('../middleware/auth');
 
 const UPLOAD_DIR = path.join(__dirname, '..', 'uploads');
 if (!fs.existsSync(UPLOAD_DIR)) fs.mkdirSync(UPLOAD_DIR, { recursive: true });
@@ -19,7 +20,9 @@ const upload = multer({
   },
 });
 
-router.get('/queue/stats', leadController.getBroadcastStats);
-router.post('/upload/:tenantId', upload.single('file'), leadController.uploadLeadsAndBroadcast);
-router.get('/:tenantId', leadController.getLeadsByTenant);
+// Queue stats are global across tenants, so admin-only.
+router.get('/queue/stats', requireAdmin, leadController.getBroadcastStats);
+// Access check runs before multer so unauthorized uploads never touch disk.
+router.post('/upload/:tenantId', requireTenantAccess(), upload.single('file'), leadController.uploadLeadsAndBroadcast);
+router.get('/:tenantId', requireTenantAccess(), leadController.getLeadsByTenant);
 module.exports = router;

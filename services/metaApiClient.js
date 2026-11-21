@@ -2,6 +2,9 @@ const axios = require('axios');
 const axiosRetry = require('axios-retry').default;
 const logger = require('../utils/logger');
 
+// Meta retires Graph API versions roughly two years after release; override via .env when bumping.
+const GRAPH_API_VERSION = process.env.META_GRAPH_API_VERSION || 'v25.0';
+
 const http = axios.create({ timeout: 15000 });
 
 axiosRetry(http, {
@@ -20,7 +23,7 @@ class MetaApiClient {
   constructor(accessToken, phoneNumberId) {
     this.accessToken = accessToken;
     this.phoneNumberId = phoneNumberId;
-    this.endpoint = `https://graph.facebook.com/v21.0/${phoneNumberId}/messages`;
+    this.endpoint = `https://graph.facebook.com/${GRAPH_API_VERSION}/${phoneNumberId}/messages`;
   }
 
   headers() {
@@ -40,13 +43,14 @@ class MetaApiClient {
     }
   }
 
-  sendTemplate(toPhone, templateName, customerName, projectName) {
+  // bodyParams: array of strings for {{1}}, {{2}}...; pass [] for templates without variables (e.g. hello_world).
+  sendTemplate(toPhone, templateName, bodyParams = [], languageCode = 'en') {
+    const template = { name: templateName, language: { code: languageCode } };
+    if (bodyParams.length) {
+      template.components = [{ type: 'body', parameters: bodyParams.map((text) => ({ type: 'text', text: String(text) })) }];
+    }
     return this._post({
-      messaging_product: 'whatsapp', recipient_type: 'individual', to: toPhone, type: 'template',
-      template: {
-        name: templateName, language: { code: 'en' },
-        components: [{ type: 'body', parameters: [{ type: 'text', text: customerName }, { type: 'text', text: projectName }] }],
-      },
+      messaging_product: 'whatsapp', recipient_type: 'individual', to: toPhone, type: 'template', template,
     }, 'sendTemplate');
   }
 

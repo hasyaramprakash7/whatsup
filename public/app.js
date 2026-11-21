@@ -86,15 +86,71 @@ document.addEventListener('DOMContentLoaded', () => {
   });
   // ------------------------------------------------
 
+  // --- AUTH ---
+  // Key lives in sessionStorage: survives reloads, cleared when the tab closes.
+  const KEY_STORAGE = 'whatsapp_engine_api_key';
+  const getKey = () => { try { return sessionStorage.getItem(KEY_STORAGE); } catch { return null; } };
+  const setKey = (k) => { try { k ? sessionStorage.setItem(KEY_STORAGE, k) : sessionStorage.removeItem(KEY_STORAGE); } catch {} };
+  let auth = null; // { role: 'admin' } | { role: 'tenant', tenantId, businessName }
+
+  function showLogin(message = '') {
+    setKey(null);
+    auth = null;
+    $('#app').hidden = true;
+    $('#logout').hidden = true;
+    $('#whoami').textContent = '';
+    $('#login-card').hidden = false;
+    $('#login-msg').textContent = message;
+    $('#login-msg').className = message ? 'msg error' : 'msg';
+    $('#api-key').focus();
+  }
+
+  // Wraps fetch with the auth header; a 401 sends the user back to the login screen.
+  async function authFetch(url, opts = {}) {
+    const res = await fetch(url, { ...opts, headers: { ...(opts.headers || {}), Authorization: `Bearer ${getKey()}` } });
+    if (res.status === 401) {
+      showLogin('Session expired or key invalid. Please sign in again.');
+      throw new Error('Not signed in');
+    }
+    return res;
+  }
+
   async function jsonFetch(url, opts = {}) {
-    const res = await fetch(url, {
-      headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) },
-      ...opts,
-    });
+    const res = await authFetch(url, { ...opts, headers: { 'Content-Type': 'application/json', ...(opts.headers || {}) } });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     return data;
   }
+
+  async function startSession() {
+    try {
+      ({ auth } = await jsonFetch(`${API}/tenants/me`));
+    } catch {
+      return; // authFetch already showed the login screen on 401
+    }
+    const isAdmin = auth.role === 'admin';
+    document.querySelectorAll('.admin-only').forEach((el) => { el.hidden = !isAdmin; });
+    $('#whoami').textContent = isAdmin ? 'Admin' : auth.businessName;
+    $('#login-card').hidden = true;
+    $('#logout').hidden = false;
+    $('#app').hidden = false;
+    logToUI(`Signed in as ${isAdmin ? 'admin' : auth.businessName}.`, 'success');
+    loadTenants();
+    if (!isAdmin) loadLeads(auth.tenantId);
+  }
+
+  $('#login-form').addEventListener('submit', (e) => {
+    e.preventDefault();
+    setKey($('#api-key').value.trim());
+    $('#api-key').value = '';
+    startSession();
+  });
+
+  $('#logout').addEventListener('click', () => {
+    logToUI('Signed out.', 'info');
+    showLogin();
+  });
+  // ------------------------------------------------
 
   async function checkHealth() {
     const badge = $('#health');
@@ -192,6 +248,7 @@ document.addEventListener('DOMContentLoaded', () => {
         body: JSON.stringify(payload),
       });
       const tenant = createRes.tenant;
+      const newApiKey = createRes.apiKey;
       logToUI(`Tenant '${tenant.businessName}' created in MongoDB.`, 'success');
 
       if (brochureFile) {
@@ -200,7 +257,7 @@ document.addEventListener('DOMContentLoaded', () => {
         
         const fd = new FormData();
         fd.append('file', brochureFile);
-        const uploadRes = await fetch(`${API}/uploads/brochure/${tenant._id}`, {
+        const uploadRes = await authFetch(`${API}/uploads/brochure/${tenant._id}`, {
           method: 'POST',
           body: fd,
         });
@@ -210,11 +267,13 @@ document.addEventListener('DOMContentLoaded', () => {
         logToUI(`Brochure uploaded to R2. URL generated.`, 'success');
       }
 
-      msgEl.textContent = '✅ Tenant successfully created!';
+      // Show the client's key once; it is never retrievable again (only its hash is stored).
+      msgEl.innerHTML = `✅ Tenant successfully created! Give this API key to the client now. It will not be shown again:
+        <code class="api-key-reveal">${escapeHtml(newApiKey)}</code>`;
       msgEl.className = 'msg success';
-      logToUI('Tenant onboarding complete.', 'success');
-      
-      e.target.reset(); 
+      logToUI('Tenant onboarding complete. API key issued.', 'success');
+
+      e.target.reset();
       loadTenants();
     } catch (err) {
       msgEl.textContent = '❌ ' + err.message;
@@ -239,7 +298,7 @@ document.addEventListener('DOMContentLoaded', () => {
     fd.append('file', file);
 
     try {
-      const res = await fetch(`${API}/leads/upload/${tenantId}`, {
+      const res = await authFetch(`${API}/leads/upload/${tenantId}`, {
         method: 'POST',
         body: fd,
       });
@@ -330,5 +389,5 @@ document.addEventListener('DOMContentLoaded', () => {
   // --- INITIALIZE ---
   loadLogsFromStorage(); // Load saved logs first
   checkHealth();
-  loadTenants();
+  if (getKey()) startSession(); else showLogin();
 });
