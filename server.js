@@ -27,6 +27,10 @@ if (!process.env.ADMIN_API_KEY || process.env.ADMIN_API_KEY.length < 32) {
 const app = express();
 logger.info('[Server] Booting application...');
 
+// Behind a reverse proxy (Caddy in docker-compose) the client IP arrives in X-Forwarded-For;
+// trust that many hops so the rate limiter limits real clients instead of the proxy.
+if (process.env.TRUST_PROXY) app.set('trust proxy', Number(process.env.TRUST_PROXY) || 1);
+
 app.use(helmet({ contentSecurityPolicy: false }));
 app.use(cors({ origin: process.env.CORS_ORIGINS ? process.env.CORS_ORIGINS.split(',').map((s) => s.trim()) : '*' }));
 app.use(morgan('dev')); // Logs all HTTP requests to terminal
