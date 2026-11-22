@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Agent Desk · WhatsApp for every business</title>
+  <meta name="theme-color" content="#0b1220" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%2310b981'/%3E%3Cpath d='M16 7a9 9 0 0 0-7.8 13.5L7 25l4.6-1.2A9 9 0 1 0 16 7z' fill='white'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <!-- Sign in -->
+  <div id="login" class="login" hidden>
+    <aside class="login-hero">
+      <div class="logo"><span class="logo-mark" data-icon="chat"></span><span>Agent Desk<small>WhatsApp for every business</small></span></div>
+      <div>
+        <h1>Your business on WhatsApp — answering, booking and selling, 24×7.</h1>
+        <p>Clinics, salons, restaurants, coaching centres, shops, real estate. Build your conversation, let the AI answer questions, and step in yourself any time.</p>
+        <div class="hero-features">
+          <div class="hero-feature"><span class="dot" data-icon="layers"></span><div><strong>Flow Builder</strong>Ready-made flows for your industry — change every question, button and reply.</div></div>
+          <div class="hero-feature"><span class="dot" data-icon="sparkle"></span><div><strong>AI assistant</strong>Answers prices, timings and FAQs from your own business details.</div></div>
+          <div class="hero-feature"><span class="dot" data-icon="chat"></span><div><strong>Live inbox</strong>Every chat appears the moment it happens. Reply and take over anytime.</div></div>
+        </div>
+      </div>
+      <small style="color:#64748b">Secured with your private API key</small>
+    </aside>
+    <main class="login-panel">
+      <div class="login-card">
+        <h2>Welcome back</h2>
+        <p class="muted">Sign in with the API key you received from your administrator.</p>
+        <form id="login-form">
+          <label class="field"><span>API key</span>
+            <input id="api-key" class="input" type="password" autocomplete="current-password" required placeholder="wre_… or admin key" />
+          </label>
+          <button type="submit" class="btn primary" style="height:42px">Sign in</button>
+          <p id="login-error" class="form-error" role="alert"></p>
+        </form>
+      </div>
+    </main>
+  </div>
+
+  <!-- App -->
+  <div id="shell" class="shell" hidden>
+    <aside class="sidebar" id="sidebar">
+      <div class="logo"><span class="logo-mark" data-icon="chat"></span><span>Agent Desk<small>WhatsApp for every business</small></span></div>
+      <nav class="nav" id="nav"></nav>
+      <div class="sidebar-foot">
+        <div class="me">
+          <span class="avatar" id="me-avatar"></span>
+          <div style="min-width:0"><strong id="me-name"></strong><small id="me-role"></small></div>
+          <button class="btn icon sm ghost" id="logout" title="Sign out" aria-label="Sign out" data-icon="logout"></button>
+        </div>
+      </div>
+    </aside>
+    <div class="main">
+      <header class="topbar">
+        <button class="btn icon ghost menu-btn" id="menu-btn" aria-label="Open menu" data-icon="menu"></button>
+        <h1 id="page-title">Overview</h1>
+        <span class="spacer"></span>
+        <div class="tenant-switch" id="tenant-switch" hidden>
+          <select id="tenant-select" aria-label="Business"></select>
+        </div>
+        <span class="live" id="live" title="Live updates"><span>Connecting…</span></span>
+        <button class="btn icon ghost" id="theme-btn" title="Switch theme" aria-label="Switch theme" data-icon="moon"></button>
+      </header>
+      <section class="page" id="page"></section>
+    </div>
+  </div>
+
+  <div class="toasts" id="toasts" aria-live="polite"></div>
+
+  <script src="/app.js"></script>
+</body>
+</html>
