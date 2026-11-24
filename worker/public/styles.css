@@ -1007,3 +1007,6 @@ img, video { max-width: 100%; }
   .splash .splash-tag { top: calc(50% + 0.195 * min(100dvh, 177vw) + 10px); font-size: clamp(11px, calc(0.032 * min(100dvh, 177vw)), 22px); }
   .splash .splash-bar { top: calc(50% + 0.195 * min(100dvh, 177vw) + 52px); }
 }
+/* Opening screen + brand panels: sharp 4x picture (same layout); the soft blurred edge layer keeps the small file. */
+.splash::before { background-image: url(/brand-splash-4k.jpg); }
+.login-brand, .features-head { background-image: url(/brand-splash-4k.jpg); }
