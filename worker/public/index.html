@@ -42,6 +42,7 @@
           <button type="submit" class="btn primary" style="height:42px">Sign in</button>
           <p id="login-error" class="form-error" role="alert"></p>
         </form>
+        <button class="btn install-login" id="install-login" type="button" hidden><span data-icon="download"></span>Install the app</button>
       </div>
     </main>
   </div>
@@ -50,6 +51,7 @@
   <div id="shell" class="shell" hidden>
     <aside class="sidebar" id="sidebar">
       <div class="logo"><span class="logo-mark" data-icon="chat"></span><span>Agent Desk<small>WhatsApp for every business</small></span></div>
+      <button class="install-side" id="install-side" type="button" hidden><span class="install-ico" data-icon="download"></span><span><strong>Install the app</strong><small>Open Agent Desk from your home screen</small></span></button>
       <nav class="nav" id="nav"></nav>
       <div class="sidebar-foot">
         <div class="me">
@@ -68,6 +70,7 @@
           <select id="tenant-select" aria-label="Business"></select>
         </div>
         <button class="ai-quick" id="ai-quick" type="button" hidden title="Turn the AI assistant on or off"><span class="dot"></span><span class="lbl">AI</span></button>
+        <button class="btn sm primary install-btn" id="install-top" type="button" hidden title="Install Agent Desk as an app"><span data-icon="download"></span><span class="lbl">Install app</span></button>
         <span class="live" id="live" title="Live updates"><span>Connecting…</span></span>
         <button class="btn icon ghost" id="theme-btn" title="Switch theme" aria-label="Switch theme" data-icon="moon"></button>
       </header>

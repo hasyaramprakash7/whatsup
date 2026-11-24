@@ -264,6 +264,38 @@
   });
   $('#logout').addEventListener('click', () => { log('Signed out.'); signOut(); });
   $('#menu-btn').addEventListener('click', () => $('#shell').classList.toggle('nav-open'));
+
+  // ---- Install as an app ----
+  const isInstalled = () => matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: fullscreen)').matches || navigator.standalone === true || document.referrer.startsWith('android-app://');
+  let installPrompt = null;
+  const INSTALL_BTNS = ['#install-top', '#install-side', '#install-login'];
+  const showInstall = (on) => INSTALL_BTNS.forEach((id) => { const b = $(id); if (b) b.hidden = !on; });
+  showInstall(!isInstalled());
+  addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e; showInstall(!isInstalled()); });
+  addEventListener('appinstalled', () => { installPrompt = null; showInstall(false); toast('App installed', 'Open Agent Desk from your home screen.'); });
+  matchMedia('(display-mode: standalone)').addEventListener?.('change', () => showInstall(!isInstalled()));
+  async function installApp() {
+    $('#shell').classList.remove('nav-open');
+    if (installPrompt) {
+      installPrompt.prompt();
+      const { outcome } = await installPrompt.userChoice.catch(() => ({}));
+      if (outcome === 'accepted') { installPrompt = null; showInstall(false); }
+      return;
+    }
+    // No install prompt from the browser (iPhone/iPad, Firefox, or Chrome not ready yet): show the steps.
+    const ua = navigator.userAgent;
+    const ios = /iPhone|iPad|iPod/.test(ua) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+    const android = /Android/.test(ua);
+    const steps = ios
+      ? ['Open this page in <strong>Safari</strong>.', 'Tap the <strong>Share</strong> button (square with an arrow).', 'Tap <strong>Add to Home Screen</strong>, then <strong>Add</strong>.']
+      : android
+        ? ['Open this page in <strong>Chrome</strong>.', 'Tap the <strong>⋮</strong> menu at the top right.', 'Tap <strong>Install app</strong> or <strong>Add to Home screen</strong>.']
+        : ['Use <strong>Chrome</strong> or <strong>Edge</strong>.', 'Click the <strong>install icon</strong> at the right end of the address bar, or open the <strong>⋮</strong> menu.', 'Choose <strong>Install Agent Desk</strong>.'];
+    modal(`<div class="card-head"><span class="section-icon">${icon('download')}</span><div><h2>Install Agent Desk</h2><p>Use it like an app, straight from your ${ios || android ? 'home screen' : 'desktop'}.</p></div></div>
+      <div class="card-body"><ol class="install-steps">${steps.map((x) => `<li>${x}</li>`).join('')}</ol></div>
+      <div class="modal-foot"><button class="btn primary" data-close>Got it</button></div>`);
+  }
+  INSTALL_BTNS.forEach((id) => $(id)?.addEventListener('click', installApp));
   $('#shell').addEventListener('click', (e) => { if (e.target === $('#shell')) $('#shell').classList.remove('nav-open'); });
 
   async function startSession() {
@@ -721,6 +753,7 @@
       <button class="btn icon ghost" id="details-toggle" title="Customer details" aria-label="Customer details">${icon('panel')}</button>`;
     $('#conv-back').addEventListener('click', () => { location.hash = '#/inbox'; });
     $('#details-toggle').addEventListener('click', () => { ib.detailsOpen = !ib.detailsOpen; $('#inbox').classList.toggle('no-details', !ib.detailsOpen); });
+    $('#details').addEventListener('click', (e) => { if (e.target.closest('#details-close')) { ib.detailsOpen = false; $('#inbox').classList.add('no-details'); } });
     $('#bot-toggle').addEventListener('change', async (e) => {
       const botPaused = !e.target.checked;
       try {
@@ -891,6 +924,7 @@
     if (!l || !el) return;
     const answers = state.fields.filter((f) => l.data?.[f.field]);
     el.innerHTML = `
+      <div class="details-bar"><button type="button" class="btn icon ghost" id="details-close" aria-label="Close customer details">${icon('x')}</button><strong>Customer details</strong></div>
       <div class="details-head">${avatar(l.name, l.phone)}<div class="name">${esc(displayName(l))}</div>
         <a href="tel:+${esc(l.phone)}" class="small">${icon('phone', 'sm')} ${esc(fmtPhone(l.phone))}</a>${statusPill(l.status)}</div>
       <div class="details-section"><h4>Answers</h4>${answers.length ? `<dl class="kv">${answers.map((f) => `<dt>${esc(f.label)}</dt><dd>${esc(l.data[f.field])}</dd>`).join('')}</dl>` : '<p class="muted small">No answers yet.</p>'}</div>
