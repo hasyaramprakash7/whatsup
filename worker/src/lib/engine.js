@@ -45,6 +45,10 @@ export function isAck(message) {
 const REASK_AFTER_MS = 15 * 60 * 1000; // repeat a waiting question after an AI answer only if asked longer ago
 // "Can I visit?", "book a slot", "schedule", "appointment" … in a finished chat → offer the visit times again.
 const BOOK_INTENT = /\b(book|booking|visit|site ?visit|schedule|slot|appointment|come and see|come to see|meet|demo|reserve)\b/i;
+// "Hi", "hello", "start"… → the guided steps (a fresh start after a booking or a long pause), not AI small talk.
+const GREETING = /^(h+i+|h+e+l+o+|hlo|helo|hai|hey+|hiya|namaste|namaskar(am)?|vanakkam|good (morning|afternoon|evening|day)|start|restart|menu|hi there|hello there|hii there)[\s!.,?🙏👋😊]*$/iu;
+const RESTART_AFTER_MS = 30 * 60 * 1000;
+const isGreeting = (m) => m?.type === 'text' && GREETING.test((m.text?.body || '').trim());
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 export class Conversation {
@@ -198,6 +202,16 @@ export class Conversation {
     try {
       const flowOn = this.flow.enabled !== false && this.flow.steps.length > 0;
       if (!flowOn) { await this.afterFlow(message); return this.touch(); }
+
+      if (isGreeting(message)) {
+        const idle = Date.now() - (this.state.updatedAt || 0) > RESTART_AFTER_MS;
+        const current = this.state.stepId && stepById(this.flow, this.state.stepId);
+        if (current && !this.state.done && !idle) { await this.ask(current); return this.touch(); } // carry on where they were
+        this.state = freshState();
+        await this.raiseStatus('ENGAGED');
+        await this.advance(null);
+        return this.touch();
+      }
 
       if (!this.state.stepId) {
         const first = this.flow.steps[0];
