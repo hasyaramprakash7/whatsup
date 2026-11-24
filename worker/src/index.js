@@ -16,6 +16,7 @@ import { aiDecide } from './lib/ai.js';
 import { MEDIA_FILE } from './lib/media.js';
 import { ITEM_FIELDS, cleanDetails, resolveMapPoint } from './lib/itemfields.js';
 import { geocode, reverseGeocode } from './lib/geo.js';
+import { pushConfigured, saveSubscription, deleteSubscription, getSubscription, sendPush, NOTIFY_KINDS } from './lib/push.js';
 import { takeAiReply, layoutOf, listCatalog, getItem, insertItem, updateItem, deleteItem, MAX_CATALOG_ITEMS } from './lib/db.js';
 
 export { ConversationDO, BusinessHub };
@@ -151,6 +152,53 @@ const templateSummaries = () => TEMPLATES.map(({ key, name, description, icon })
 const tenantPayload = (t) => ({ success: true, data: publicTenant(t), fields: flowFields(t.flow), templates: templateSummaries() });
 
 app.get('/api/tenants/me', (c) => c.json({ success: true, auth: c.get('auth') }));
+
+// ---------------- phone notifications ----------------
+const pushScope = (a) => (a.role === 'admin' ? '*' : a.tenantId);
+const cleanPrefs = (p) => Object.fromEntries(NOTIFY_KINDS.map((k) => [k, p?.[k] !== false]));
+const validSub = (s) => s && typeof s.endpoint === 'string' && /^https:\/\//.test(s.endpoint) && s.endpoint.length < 1000
+  && typeof s.keys?.p256dh === 'string' && typeof s.keys?.auth === 'string' && s.keys.p256dh.length < 200 && s.keys.auth.length < 100;
+
+app.get('/api/push/key', (c) => c.json({ success: true, enabled: pushConfigured(c.env), publicKey: c.env.VAPID_PUBLIC_KEY || null, kinds: NOTIFY_KINDS }));
+
+/** Turns notifications on for this phone/computer (or updates its choices). */
+app.post('/api/push/subscribe', async (c) => {
+  if (!pushConfigured(c.env)) return fail(c, 503, 'Notifications are not set up on the server yet.');
+  const b = await c.req.json().catch(() => ({}));
+  if (!validSub(b.subscription)) return fail(c, 400, 'Invalid subscription.');
+  const prefs = cleanPrefs(b.prefs);
+  await saveSubscription(c.env, { scope: pushScope(c.get('auth')), endpoint: b.subscription.endpoint, p256dh: b.subscription.keys.p256dh, auth: b.subscription.keys.auth, prefs, userAgent: c.req.header('user-agent') });
+  return c.json({ success: true, prefs });
+});
+
+/** This device's saved choices. */
+app.post('/api/push/status', async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  const sub = b.endpoint ? await getSubscription(c.env, String(b.endpoint)) : null;
+  if (!sub || sub.scope !== pushScope(c.get('auth'))) return c.json({ success: true, subscribed: false });
+  return c.json({ success: true, subscribed: true, prefs: cleanPrefs(sub.prefs) });
+});
+
+app.post('/api/push/unsubscribe', async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  const sub = b.endpoint ? await getSubscription(c.env, String(b.endpoint)) : null;
+  if (sub && sub.scope === pushScope(c.get('auth'))) await deleteSubscription(c.env, sub.endpoint);
+  return c.json({ success: true });
+});
+
+/** Sends a test notification to this device only. */
+app.post('/api/push/test', async (c) => {
+  if (!pushConfigured(c.env)) return fail(c, 503, 'Notifications are not set up on the server yet.');
+  const b = await c.req.json().catch(() => ({}));
+  const sub = b.endpoint ? await getSubscription(c.env, String(b.endpoint)) : null;
+  if (!sub || sub.scope !== pushScope(c.get('auth'))) return fail(c, 404, 'Turn notifications on first.');
+  let r;
+  try { r = await sendPush(c.env, sub, { kind: 'test', title: 'Bluxury WhatsApp AI', body: 'Notifications are working. You will hear about new messages and bookings here.', url: '/#/overview', tag: 'test' }); }
+  catch (err) { return fail(c, 502, `Could not reach the notification service: ${err.message}`); }
+  if (r.gone) { await deleteSubscription(c.env, sub.endpoint); return fail(c, 410, 'This device turned notifications off. Turn them on again.'); }
+  if (!r.ok) return fail(c, 502, `The notification service refused it (${r.status}).`);
+  return c.json({ success: true });
+});
 app.get('/api/templates', (c) => c.json({ success: true, data: TEMPLATES }));
 
 app.get('/api/tenants', async (c) => {

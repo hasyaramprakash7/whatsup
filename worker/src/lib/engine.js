@@ -378,6 +378,7 @@ export class Conversation {
     if (step.alertTeam !== false) {
       const fields = this.fieldSummary();
       await this.alertTeam({
+        kind: 'booking',
         headline: 'New booking',
         details: fields.map(([l, v]) => `${l}: ${v}`).join(' · ') || 'Completed the conversation',
         text: `🎉 *NEW ${String(this.tenant.profile?.displayName || this.tenant.businessName).toUpperCase()} LEAD*\n\n• *Name:* ${this.lead.name || '—'}\n• *Phone:* +${this.phone}\n${fields.map(([l, v]) => `• *${l}:* ${v}`).join('\n')}`,
@@ -494,6 +495,7 @@ export class Conversation {
     this.state.unexpected = 0; // when the team turns the bot back on, it continues from this step
     const said = message.type === 'text' ? (message.text?.body || '').trim() : `(sent ${/^[aeiou]/i.test(message.type) ? 'an' : 'a'} ${message.type} message)`;
     await this.alertTeam({
+      kind: 'handoff',
       headline: 'Customer needs a person',
       details: `Last message: ${said.replace(/\s+/g, ' ').slice(0, 200)}`,
       text: `📞 *CUSTOMER NEEDS A PERSON*\n\n• *Name:* ${this.lead?.name || '—'}\n• *Phone:* +${this.phone}\n• *Their message:* ${said}\n\nThe bot is paused for this chat. Reply from the Inbox.`,
@@ -501,7 +503,8 @@ export class Conversation {
   }
 
   /** WhatsApp alert to the business's team number; result recorded on the lead. */
-  async alertTeam({ headline, details, text }) {
+  async alertTeam({ kind, headline, details, text }) {
+    if (kind) await publish(this.env, this.tenant._id, 'alert', { kind, headline, details, phone: this.phone, name: this.lead?.name || '' });
     const tpl = this.tenant.templates || {};
     const to = this.tenant.adminNotificationPhone;
     let messageId = null; let error = null;

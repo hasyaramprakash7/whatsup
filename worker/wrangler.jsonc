@@ -49,7 +49,9 @@
     "SITE_UTC_OFFSET": "+05:30",
     "DEFAULT_BROADCAST_TEMPLATE": "realestate_reengage_v1",
     "DEFAULT_BROADCAST_LANGUAGE": "en",
-    "BROADCAST_RATE_PER_SECOND": "10"
+    "BROADCAST_RATE_PER_SECOND": "10",
+    // Contact for phone push services (Web Push VAPID "sub")
+    "VAPID_SUBJECT": "https://whatsapp-agent.hasya7893828468.workers.dev"
   }
   // Secrets (wrangler secret put / .dev.vars): ADMIN_API_KEY, META_APP_SECRET, WHATSAPP_VERIFY_TOKEN, TOKEN_ENCRYPTION_KEY
 }

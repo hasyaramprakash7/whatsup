@@ -1,4 +1,4 @@
-/* Agent Desk — WhatsApp for every business. Vanilla JS dashboard served by the Cloudflare Worker. */
+/* Bluxury WhatsApp AI — dashboard app (phone, tablet, desktop), served by the Cloudflare Worker. */
 (() => {
   'use strict';
 
@@ -31,6 +31,9 @@
     activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
     logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
     menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
+    bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
+    bellOff: '<path d="M8.7 3A6 6 0 0 1 18 8a21.3 21.3 0 0 0 .6 5M17 17H3s3-2 3-9a4.67 4.67 0 0 1 .3-1.7M10.3 21a1.94 1.94 0 0 0 3.4 0M2 2l20 20"/>',
+    shield: '<path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>',
     moon: '<path d="M21 12.8A9 9 0 1 1 11.2 3a7 7 0 0 0 9.8 9.8z"/>',
     sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2v2M12 20v2M4.9 4.9l1.4 1.4M17.7 17.7l1.4 1.4M2 12h2M20 12h2M4.9 19.1l1.4-1.4M17.7 6.3l1.4-1.4"/>',
     search: '<circle cx="11" cy="11" r="7"/><path d="m20 20-3.5-3.5"/>',
@@ -169,7 +172,7 @@
     unreadChats: 0, live: null, route: { page: 'overview', arg: null }, inbox: null, builder: null, profileDraft: null, aiDraft: null,
   };
   const isAdmin = () => state.auth?.role === 'admin';
-  const getKey = () => store.get(KEY_STORAGE, sessionStorage);
+  const getKey = () => store.get(KEY_STORAGE, sessionStorage) || store.get(KEY_STORAGE);
   const bizName = () => state.tenant?.profile?.displayName || state.tenant?.businessName || '';
 
   async function authFetch(url, opts = {}) {
@@ -244,12 +247,14 @@
   // Session
   // ============================================================
   function showLogin(message = '') {
+    hideSplash();
     $('#shell').hidden = true; $('#login').hidden = false;
     $('#login-error').textContent = message;
     setTimeout(() => $('#api-key').focus(), 50);
   }
   function signOut(message = '') {
-    store.set(KEY_STORAGE, null, sessionStorage);
+    if (state.auth) pushForget(); // this device stops getting this account's notifications
+    store.set(KEY_STORAGE, null, sessionStorage); store.set(KEY_STORAGE, null);
     state.auth = null;
     disconnectLive();
     showLogin(message);
@@ -258,12 +263,188 @@
     e.preventDefault();
     const key = $('#api-key').value.trim();
     if (!key) return;
-    store.set(KEY_STORAGE, key, sessionStorage);
+    // Installed apps stay signed in (like any app); untick on a shared computer.
+    const remember = $('#remember-me')?.checked !== false;
+    store.set(KEY_STORAGE, null, sessionStorage); store.set(KEY_STORAGE, null);
+    store.set(KEY_STORAGE, key, remember ? localStorage : sessionStorage);
     $('#api-key').value = ''; $('#login-error').textContent = '';
     await startSession();
   });
   $('#logout').addEventListener('click', () => { log('Signed out.'); signOut(); });
   $('#menu-btn').addEventListener('click', () => $('#shell').classList.toggle('nav-open'));
+
+  // ---- Splash (opening screen) ----
+  const splashStart = Date.now();
+  function hideSplash() {
+    const el = $('#splash'); if (!el || el.classList.contains('out')) return;
+    // A short, calm opening in the installed app; instant in a browser tab.
+    const min = matchMedia('(display-mode: standalone)').matches || navigator.standalone ? 900 : 250;
+    setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 450); }, Math.max(0, min - (Date.now() - splashStart)));
+  }
+
+  // ---- App features (shown on sign-in, in the menu and when installing) ----
+  const FEATURES = [
+    ['chat', 'Live WhatsApp inbox', 'Every chat appears the moment it happens. Reply, send photos and take over from the bot any time.'],
+    ['sparkle', 'AI assistant, 24×7', 'Answers prices, timings and FAQs — even voice notes — from your own business details, on the hours you choose.'],
+    ['layers', 'Flow Builder', 'Ready-made conversations for your industry. Change every question, button and reply.'],
+    ['image', 'Products & services', 'Photos with names and prices that the bot and AI send to customers.'],
+    ['calendar', 'Bookings & time slots', 'Customers pick a time; every confirmed booking lands in one list you can export.'],
+    ['megaphone', 'Broadcast offers', 'Send approved offers to a CSV list or numbers you type in — with delivery tracking.'],
+    ['users', 'Leads & follow-up', 'Every customer with status, answers and history. Filter, search and export.'],
+    ['bell', 'Instant notifications', 'New messages, bookings and customers who need a person — on your phone, even when the app is closed.'],
+    ['shield', 'Private & secure', 'Your own key, encrypted WhatsApp access, opt-outs respected automatically.'],
+    ['download', 'Works like an app', 'Install on Android, iPhone, tablet or computer. Opens full screen from your home screen.'],
+  ];
+  const featureHtml = (cls = 'hero-feature') => FEATURES.map(([ic, t, d]) => `<div class="${cls}"><span class="dot">${icon(ic)}</span><div><strong>${t}</strong>${d}</div></div>`).join('');
+  if ($('#hero-features')) $('#hero-features').innerHTML = featureHtml();
+  function showFeatures() {
+    $('#shell').classList.remove('nav-open');
+    modal(`<div class="features-head"><img src="/brand-logo.png" alt="Bluxury" /><div class="brand-tag">WhatsApp AI</div><p>Everything in the app</p></div>
+      <div class="card-body feature-list">${featureHtml('feature-row')}</div>
+      <div class="modal-foot">${isInstalled() ? '' : '<button class="btn" id="feat-install">' + icon('download') + 'Install the app</button>'}<button class="btn primary" data-close>Close</button></div>`, {
+      onMount: (el, close) => el.querySelector('#feat-install')?.addEventListener('click', () => { close(); installApp(); }),
+    });
+  }
+  $('#features-side').addEventListener('click', showFeatures);
+
+  // ---- Phone notifications (Web Push) ----
+  const PUSH_KINDS = [
+    ['message', 'New customer messages', 'Someone writes to your WhatsApp number.'],
+    ['booking', 'New bookings', 'A customer confirms a booking or order.'],
+    ['handoff', 'Customer needs a person', 'The bot handed the chat to your team.'],
+    ['broadcast', 'Broadcast finished', 'How many were sent, and any that failed.'],
+  ];
+  const PUSH_ON_KEY = 'bluxury_push_on';
+  const PUSH_PREFS_KEY = 'bluxury_push_prefs';
+  state.push = { supported: false, on: false, endpoint: null, prefs: null, key: null, serverReady: false };
+  const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  const appleDevice = () => /iPhone|iPad|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const localPrefs = () => { try { return { message: true, booking: true, handoff: true, broadcast: true, ...JSON.parse(store.get(PUSH_PREFS_KEY) || '{}') }; } catch { return { message: true, booking: true, handoff: true, broadcast: true }; } };
+  const keyBytes = (b64) => { const s = b64.replace(/-/g, '+').replace(/_/g, '/'); const bin = atob(s + '='.repeat((4 - (s.length % 4)) % 4)); return Uint8Array.from(bin, (c) => c.charCodeAt(0)); };
+  function paintPushState() {
+    const on = state.push.on;
+    $('#notify-dot').hidden = on || !state.push.supported || !state.push.serverReady;
+    const b = $('#notify-btn'); if (b) { b.innerHTML = `${icon(on ? 'bell' : 'bellOff')}<i class="notify-dot" id="notify-dot" ${on || !state.push.supported || !state.push.serverReady ? 'hidden' : ''}></i>`; b.title = on ? 'Notifications are on' : 'Turn on notifications'; b.classList.toggle('on', on); }
+    const st = $('#notify-side-state'); if (st) { st.textContent = on ? 'On' : 'Off'; st.classList.toggle('on', on); }
+  }
+  async function currentSubscription() {
+    const reg = await navigator.serviceWorker.ready;
+    return reg.pushManager.getSubscription();
+  }
+  async function initPush() {
+    state.push.supported = pushSupported();
+    try {
+      const k = await api('GET', '/push/key');
+      state.push.serverReady = !!k.enabled; state.push.key = k.publicKey;
+    } catch { state.push.serverReady = false; }
+    if (state.push.supported && state.push.serverReady && Notification.permission === 'granted' && store.get(PUSH_ON_KEY) === '1') {
+      try {
+        let sub = await currentSubscription();
+        if (!sub) sub = await (await navigator.serviceWorker.ready).pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(state.push.key) });
+        const res = await api('POST', '/push/subscribe', { subscription: sub.toJSON(), prefs: localPrefs() });
+        state.push.on = true; state.push.endpoint = sub.endpoint; state.push.prefs = res.prefs;
+      } catch { state.push.on = false; }
+    }
+    paintPushState();
+    // A gentle one-time nudge after sign-in.
+    if (!state.push.on && state.push.supported && state.push.serverReady && Notification.permission !== 'denied' && !store.get('bluxury_push_nudged')) {
+      store.set('bluxury_push_nudged', '1');
+      setTimeout(() => toast('Get notified instantly', 'Tap to turn on notifications for new messages and bookings.', { kind: 'info', timeout: 12000, onClick: openNotifySheet }), 1500);
+    }
+  }
+  async function pushEnable() {
+    if (appleDevice() && !isInstalled()) throw new Error('On iPhone and iPad, install the app first (Share → Add to Home Screen), open it from your home screen, then turn notifications on.');
+    if (!state.push.supported) throw new Error('This browser does not support notifications. Use Chrome, Edge, Firefox or Safari 16.4+.');
+    if (!state.push.serverReady) throw new Error('Notifications are not set up on the server yet.');
+    const perm = await Notification.requestPermission();
+    if (perm !== 'granted') throw new Error(perm === 'denied' ? 'Notifications are blocked for this site. Allow them in your browser or phone settings, then try again.' : 'Notifications were not allowed.');
+    const reg = await navigator.serviceWorker.ready;
+    let sub = await reg.pushManager.getSubscription();
+    if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(state.push.key) });
+    const res = await api('POST', '/push/subscribe', { subscription: sub.toJSON(), prefs: localPrefs() });
+    store.set(PUSH_ON_KEY, '1');
+    Object.assign(state.push, { on: true, endpoint: sub.endpoint, prefs: res.prefs });
+    paintPushState();
+  }
+  async function pushDisable() {
+    store.set(PUSH_ON_KEY, '0');
+    try {
+      const sub = await currentSubscription();
+      if (sub) { await api('POST', '/push/unsubscribe', { endpoint: sub.endpoint }).catch(() => {}); await sub.unsubscribe().catch(() => {}); }
+    } finally { Object.assign(state.push, { on: false, endpoint: null }); paintPushState(); }
+  }
+  /** On sign-out: this device stops receiving this account's notifications (sign in again to get them back). */
+  function pushForget() {
+    if (!state.push?.on || !state.push.endpoint) return;
+    api('POST', '/push/unsubscribe', { endpoint: state.push.endpoint }).catch(() => {});
+    state.push.on = false; paintPushState();
+  }
+  async function savePushPrefs(prefs) {
+    store.set(PUSH_PREFS_KEY, JSON.stringify(prefs));
+    if (!state.push.on) return;
+    const sub = await currentSubscription();
+    if (sub) { const res = await api('POST', '/push/subscribe', { subscription: sub.toJSON(), prefs }); state.push.prefs = res.prefs; }
+  }
+  function openNotifySheet() {
+    $('#shell').classList.remove('nav-open');
+    const draw = (el, close) => {
+      const p = state.push; const prefs = p.prefs || localPrefs();
+      const blocked = 'Notification' in window && Notification.permission === 'denied';
+      const iosNeedsInstall = appleDevice() && !isInstalled();
+      el.querySelector('.modal').innerHTML = `
+        <div class="card-head"><span class="section-icon">${icon('bell')}</span><div><h2>Notifications</h2><p>${p.on ? 'On for this device' : 'Off on this device'}</p></div><span class="spacer"></span><button class="btn icon ghost" data-close aria-label="Close">${icon('x')}</button></div>
+        <div class="card-body stack">
+          ${iosNeedsInstall ? `<div class="banner amber">${icon('info')}<div><strong>iPhone / iPad:</strong> install the app first — tap <strong>Share</strong> → <strong>Add to Home Screen</strong>, open Bluxury AI from your home screen, then turn notifications on here.</div></div>` : ''}
+          ${blocked ? `<div class="banner red">${icon('alert')}<div>Notifications are <strong>blocked</strong> for this site. Allow them in your ${appleDevice() ? 'iPhone Settings → Notifications → Bluxury AI' : 'browser’s site settings (the lock icon next to the address)'} and come back.</div></div>` : ''}
+          ${!p.serverReady ? `<div class="banner amber">${icon('info')}<div>Notifications are being set up on the server. Please try again shortly.</div></div>` : ''}
+          <div class="notify-main ${p.on ? 'on' : ''}">
+            <span class="section-icon">${icon(p.on ? 'bell' : 'bellOff', 'lg')}</span>
+            <div class="grow"><strong>${p.on ? 'Notifications are on' : 'Get notified instantly'}</strong><p class="muted small">${p.on ? 'You’ll get them on this device even when the app is closed.' : 'New messages and bookings arrive on this device, even when the app is closed.'}</p></div>
+            <button class="btn ${p.on ? '' : 'primary'}" id="push-toggle" ${(!p.on && (blocked || iosNeedsInstall || !p.serverReady)) ? 'disabled' : ''}>${p.on ? 'Turn off' : 'Turn on'}</button>
+          </div>
+          <div id="push-err"></div>
+          <div class="stack" style="gap:2px">
+            <strong class="small muted" style="text-transform:uppercase;letter-spacing:.06em">Notify me about</strong>
+            ${PUSH_KINDS.map(([k, t, d]) => `<label class="notify-pref"><div class="grow"><strong>${t}</strong><small>${d}</small></div><span class="switch"><input type="checkbox" data-pk="${k}" ${prefs[k] !== false ? 'checked' : ''} /><span class="track"></span></span></label>`).join('')}
+          </div>
+          ${p.on ? `<button class="btn" id="push-test">${icon('send')}Send a test notification</button>` : ''}
+          <p class="hint">Each phone or computer is turned on separately. ${isAdmin() ? 'As admin you get notifications for every business.' : ''}</p>
+        </div>`;
+      hydrateIcons(el);
+      el.querySelectorAll('[data-close]').forEach((b) => b.addEventListener('click', close));
+      const err = (m) => { el.querySelector('#push-err').innerHTML = m ? `<div class="banner red">${icon('alert')}<div>${esc(m)}</div></div>` : ''; };
+      el.querySelector('#push-toggle')?.addEventListener('click', async (e) => {
+        const b = e.currentTarget; b.disabled = true; b.innerHTML = '<span class="spinner"></span>';
+        try {
+          if (state.push.on) { await pushDisable(); toast('Notifications off', 'This device will not get notifications.'); }
+          else { await pushEnable(); toast('Notifications on', 'You’ll be notified about new messages and bookings.'); }
+          draw(el, close);
+        } catch (x) { err(x.message); b.disabled = false; b.textContent = state.push.on ? 'Turn off' : 'Turn on'; }
+      });
+      el.querySelectorAll('[data-pk]').forEach((c) => c.addEventListener('change', async () => {
+        const prefs = { ...localPrefs() }; el.querySelectorAll('[data-pk]').forEach((x) => { prefs[x.dataset.pk] = x.checked; });
+        try { await savePushPrefs(prefs); } catch (x) { err(x.message); }
+      }));
+      el.querySelector('#push-test')?.addEventListener('click', async (e) => {
+        const b = e.currentTarget; b.disabled = true;
+        try {
+          await api('POST', '/push/test', { endpoint: state.push.endpoint });
+          toast('Test sent', document.visibilityState === 'visible' ? 'It should appear in a moment.' : '');
+        } catch (x) { err(x.message); } finally { b.disabled = false; }
+      });
+    };
+    modal('', { onMount: draw });
+  }
+  $('#notify-btn').addEventListener('click', openNotifySheet);
+  $('#notify-side').addEventListener('click', openNotifySheet);
+  // Notification tapped while the app is open: go straight to that chat / page.
+  navigator.serviceWorker?.addEventListener('message', async (e) => {
+    const d = e.data || {};
+    if (d.type !== 'open' || !state.auth) return;
+    if (d.tenantId && isAdmin() && d.tenantId !== state.tenantId && state.tenants.some((t) => t._id === d.tenantId)) await selectTenant(d.tenantId, { silent: true });
+    location.hash = (d.url || '/#/overview').replace(/^\/?/, '').replace(/^[^#]*/, '');
+    if (location.hash === '') location.hash = '#/overview';
+  });
 
   // ---- Install as an app ----
   const isInstalled = () => matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: fullscreen)').matches || navigator.standalone === true || document.referrer.startsWith('android-app://');
@@ -272,7 +453,7 @@
   const showInstall = (on) => INSTALL_BTNS.forEach((id) => { const b = $(id); if (b) b.hidden = !on; });
   showInstall(!isInstalled());
   addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e; showInstall(!isInstalled()); });
-  addEventListener('appinstalled', () => { installPrompt = null; showInstall(false); toast('App installed', 'Open Agent Desk from your home screen.'); });
+  addEventListener('appinstalled', () => { installPrompt = null; showInstall(false); toast('App installed', 'Open Bluxury AI from your home screen.'); });
   matchMedia('(display-mode: standalone)').addEventListener?.('change', () => showInstall(!isInstalled()));
   async function installApp() {
     $('#shell').classList.remove('nav-open');
@@ -290,8 +471,8 @@
       ? ['Open this page in <strong>Safari</strong>.', 'Tap the <strong>Share</strong> button (square with an arrow).', 'Tap <strong>Add to Home Screen</strong>, then <strong>Add</strong>.']
       : android
         ? ['Open this page in <strong>Chrome</strong>.', 'Tap the <strong>⋮</strong> menu at the top right.', 'Tap <strong>Install app</strong> or <strong>Add to Home screen</strong>.']
-        : ['Use <strong>Chrome</strong> or <strong>Edge</strong>.', 'Click the <strong>install icon</strong> at the right end of the address bar, or open the <strong>⋮</strong> menu.', 'Choose <strong>Install Agent Desk</strong>.'];
-    modal(`<div class="card-head"><span class="section-icon">${icon('download')}</span><div><h2>Install Agent Desk</h2><p>Use it like an app, straight from your ${ios || android ? 'home screen' : 'desktop'}.</p></div></div>
+        : ['Use <strong>Chrome</strong> or <strong>Edge</strong>.', 'Click the <strong>install icon</strong> at the right end of the address bar, or open the <strong>⋮</strong> menu.', 'Choose <strong>Install Bluxury WhatsApp AI</strong>.'];
+    modal(`<div class="card-head"><span class="section-icon">${icon('download')}</span><div><h2>Install Bluxury WhatsApp AI</h2><p>Use it like an app, straight from your ${ios || android ? 'home screen' : 'desktop'}.</p></div></div>
       <div class="card-body"><ol class="install-steps">${steps.map((x) => `<li>${x}</li>`).join('')}</ol></div>
       <div class="modal-foot"><button class="btn primary" data-close>Got it</button></div>`);
   }
@@ -307,8 +488,16 @@
     $('#me-avatar').outerHTML = avatar(isAdmin() ? 'Admin' : state.auth.businessName, 'me').replace('class="avatar ', 'id="me-avatar" class="avatar ');
     log(`Signed in as ${isAdmin() ? 'admin' : state.auth.businessName}.`, 'success');
     await loadTenants();
+    // Opened from a notification for another business (admins): switch to it.
+    const wanted = new URLSearchParams(location.search).get('t');
+    if (wanted) {
+      history.replaceState(null, '', location.pathname + location.hash);
+      if (isAdmin() && wanted !== state.tenantId && state.tenants.some((t) => t._id === wanted)) await selectTenant(wanted, { silent: true });
+    }
     renderNav();
     route();
+    hideSplash();
+    initPush();
   }
 
   async function loadTenants() {
@@ -372,7 +561,9 @@
       const { unreadChats } = await api('GET', `/chats/${state.tenantId}?limit=1`);
       state.unreadChats = unreadChats;
       for (const b of [$('#nav-unread'), ...$$('#tabbar .nav-unread')]) if (b) { b.textContent = unreadChats; b.hidden = !unreadChats; }
-      document.title = `${unreadChats ? `(${unreadChats}) ` : ''}Agent Desk · WhatsApp for every business`;
+      document.title = `${unreadChats ? `(${unreadChats}) ` : ''}Bluxury WhatsApp AI`;
+      // Installed app: number on the home-screen icon.
+      if (navigator.setAppBadge) (unreadChats ? navigator.setAppBadge(unreadChats) : navigator.clearAppBadge()).catch(() => {});
     } catch { /* ignore */ }
   }, 300);
 
@@ -404,6 +595,7 @@
       if (msg.event === 'message:new') onLiveMessage(msg.data);
       else if (msg.event === 'message:status') onLiveStatus(msg.data);
       else if (msg.event === 'lead:update') onLeadUpdate(msg.data.lead);
+      else if (msg.event === 'alert') onLiveAlert(msg.data);
     };
     ws.onclose = () => {
       clearInterval(live.ping);
@@ -443,12 +635,20 @@
   }
   function notifyDesktop(title, body, phone) {
     chime();
-    if (document.visibilityState === 'visible' || !('Notification' in window) || Notification.permission !== 'granted') return;
+    if (state.push?.on || document.visibilityState === 'visible' || !('Notification' in window) || Notification.permission !== 'granted') return;
     const n = new Notification(title, { body: String(body).slice(0, 140), tag: `chat-${phone}` });
     n.onclick = () => { window.focus(); location.hash = `#/inbox/${phone}`; n.close(); };
   }
-  // Browsers only allow asking for notification permission after a click.
-  document.addEventListener('click', () => { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(() => {}); }, { once: true });
+  function onLiveAlert(a) {
+    if (!a?.phone) return;
+    const who = a.name || fmtPhone(a.phone);
+    const booking = a.kind === 'booking';
+    chime();
+    toast(booking ? `New booking · ${who}` : `${who} needs a person`, a.details || '', {
+      kind: booking ? 'ok' : 'warn', timeout: 9000,
+      onClick: () => { location.hash = booking ? '#/confirmed' : `#/inbox/${a.phone}`; },
+    });
+  }
   function onLiveStatus({ id, status, error, phone }) {
     const ib = state.inbox;
     if (!ib || ib.active !== phone) return;
@@ -2111,7 +2311,7 @@
   async function renderClients() {
     if (!state.templates.length) { try { state.templates = (await api('GET', '/templates')).data; } catch { /* */ } }
     $('#page').innerHTML = `<div class="page-inner">
-      <div class="page-head"><div><h1>Businesses</h1><p>Every business connected to this Agent Desk.</p></div><span class="spacer"></span><button class="btn primary" id="new-client">${icon('plus')}New business</button></div>
+      <div class="page-head"><div><h1>Businesses</h1><p>Every business connected to Bluxury WhatsApp AI.</p></div><span class="spacer"></span><button class="btn primary" id="new-client">${icon('plus')}New business</button></div>
       <div class="clients" id="client-list"></div></div>`;
     const list = $('#client-list');
     const tplName = (k) => state.templates.find((t) => t.key === k)?.name || k;

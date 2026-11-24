@@ -1,17 +1,24 @@
 {
-  "name": "Agent Desk",
-  "short_name": "Agent Desk",
-  "description": "Your business on WhatsApp: inbox, leads, broadcasts and the AI assistant.",
+  "name": "Bluxury WhatsApp AI",
+  "short_name": "Bluxury AI",
+  "description": "Your business on WhatsApp: live inbox, AI assistant, bookings, broadcasts and instant notifications.",
   "id": "/",
   "start_url": "/#/overview",
   "scope": "/",
   "display": "standalone",
+  "display_override": ["standalone", "minimal-ui"],
   "orientation": "any",
-  "background_color": "#0b1220",
-  "theme_color": "#0b1220",
+  "background_color": "#04382c",
+  "theme_color": "#04382c",
+  "categories": ["business", "productivity"],
   "icons": [
     { "src": "/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
     { "src": "/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
     { "src": "/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Inbox", "short_name": "Inbox", "url": "/#/inbox", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Confirmed bookings", "short_name": "Bookings", "url": "/#/confirmed", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Broadcast", "short_name": "Broadcast", "url": "/#/broadcast", "icons": [{ "src": "/icon-192.png", "sizes": "192x192" }] }
   ]
 }

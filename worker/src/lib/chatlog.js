@@ -6,7 +6,7 @@ const MEDIA_LABELS = { image: '📷 Photo', video: '🎥 Video', audio: '🎤 Vo
 /** Sends a live event to everyone watching this business's dashboard. Never throws. */
 export async function publish(env, tenantId, event, data) {
   try {
-    await env.HUB.get(env.HUB.idFromName(String(tenantId))).publish(event, data);
+    await env.HUB.get(env.HUB.idFromName(String(tenantId))).publish(event, data, String(tenantId));
   } catch (err) {
     console.warn(`[Realtime] publish ${event} failed:`, err.message);
   }
