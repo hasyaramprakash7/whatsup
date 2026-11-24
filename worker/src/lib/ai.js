@@ -66,11 +66,13 @@ function systemPrompt(tenant, aiCfg, pending, catalog, customerPlace = null, off
       ? `CURRENT STEP: the customer was asked: "${pending.question}"\nThe valid options are:\n${pending.options.map((o) => `- ${o.id}: ${o.title}`).join('\n')}\n`
         + `Today is ${todayLabel(offset)}. `
         + 'If the customer\'s message clearly picks one of these options (in any wording or language), use action "select" with that option_id and a short acknowledgement as reply. '
-        + (pending.slots ? 'These options are appointment times. Only select one if its day AND time match what the customer asked for. If they ask for a day or time that is not in the list (for example "today 10 am" when the options say "Tomorrow, 10 AM"), do NOT select: use action "answer", say that time is not available to book here, and ask them to pick one of the listed times or say our team will call to arrange their preferred time. ' : '')
-        + 'If they ask a question instead, use action "answer" (the original question will be repeated to them after your reply, so do not repeat the options).'
+        + (pending.slots ? 'These options are appointment times. Only select one if its day AND time match what the customer asked for. If they want a different day or time, do NOT select and do NOT refuse: use action "answer" and ask them to type the exact day and time they prefer (for example "Saturday 5 PM") so we can book it for them. ' : '')
+        + (pending.slots
+          ? 'If they ask a question instead, use action "answer": answer it, then end with ONE short sentence inviting them to book — tap one of the times above, or type the day and time that suits them (for example "today 5 PM"). Booking the visit is the goal of this chat.'
+          : 'If they ask a question instead, use action "answer": answer it, then gently ask them to answer the question above (do not list the options).')
         + (pending.slots ? `
-These are the ONLY available times. Today is ${pending.today}. Use "select" only when BOTH the day and the time the customer asked for match that option exactly (e.g. "tomorrow 4pm"). If they ask for a day or time that is not in the list (for example today, or a time not shown), use action "answer": say politely that this time is not available and ask them to pick one of the times shown. Never pick a different day or time for them.` : '')
-      : 'The customer has finished the guided conversation. Answer their questions with action "answer".',
+Use "select" only when BOTH the day and the time the customer asked for match that option exactly (e.g. "tomorrow 4pm"). Never pick a different day or time for them.` : '')
+      : 'The customer has finished the guided conversation. Answer their questions with action "answer". If they show interest in a product or project, end by inviting them to book a visit: they can type the day and time they prefer (for example "Saturday 11 AM").',
     '',
     'Respond with JSON only: {"action": "answer" | "select" | "handoff", "option_id": string or null, "reply": string, "item_ids": string[], "send_document": boolean}.',
   ].filter((l) => l !== '').join('\n');

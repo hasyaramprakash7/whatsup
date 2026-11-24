@@ -3,7 +3,7 @@
 import { fill, normalizePhone } from './text.js';
 import { stepById, stepAfter } from './flow.js';
 import { DEFAULT_MESSAGES } from './templates.js';
-import { buildVisitSlots, parseSlotId, formatSlotLong, withinAiHours } from './slots.js';
+import { buildVisitSlots, parseSlotId, formatSlotLong, formatSlotShort, withinAiHours, parseRequestedTime, clockLabel } from './slots.js';
 import { aiDecide } from './ai.js';
 import { upsertLead, recentTurns, takeAiReply, listCatalog, itemCaption, layoutOf } from './db.js';
 import { publish } from './chatlog.js';
@@ -43,6 +43,8 @@ export function isAck(message) {
 }
 
 const REASK_AFTER_MS = 15 * 60 * 1000; // repeat a waiting question after an AI answer only if asked longer ago
+// "Can I visit?", "book a slot", "schedule", "appointment" … in a finished chat → offer the visit times again.
+const BOOK_INTENT = /\b(book|booking|visit|site ?visit|schedule|slot|appointment|come and see|come to see|meet|demo|reserve)\b/i;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 export class Conversation {
@@ -177,7 +179,7 @@ export class Conversation {
     // and the question above stays tappable, so nothing is repeated (each message costs money).
     if (iid?.startsWith('ITEM_')) {
       const it = await this.item(iid.slice(5));
-      if (it) { await this.rememberItem(it); await this.sendItem(it); }
+      if (it) { await this.rememberItem(it); await this.sendItem(it); await this.offerVisitFor(it); }
       else await this.bot.text(this.phone, 'Sorry, that one is no longer available.').catch(() => {});
       return this.touch();
     }
@@ -473,6 +475,11 @@ export class Conversation {
 
   /** The customer typed (or sent media) instead of answering. AI first, then nudge, then hand over. */
   async unexpected(step, message, invalid) {
+    // "Is it possible today at 4?" while choosing a time: offer exactly that time as a one-tap booking.
+    if (step.type === 'slots' && message.type === 'text') {
+      const req = parseRequestedTime(textOf(message), new Date(), this.visitHours(step));
+      if (req) return this.offerTime(step, req);
+    }
     if (!invalid && await this.aiAvailable(message)) {
       const pending = this.pendingFor(step);
       const d = await aiDecide(this.env, { tenant: this.tenant, aiCfg: this.aiCfg, pending, catalog: await this.catalog(), customerPlace: this.customerPlace(), history: await recentTurns(this.env, this.tenant._id, this.phone) });
@@ -504,6 +511,17 @@ export class Conversation {
   // "ok"/"thanks" get the closing message once and are then left alone (no AI call, no repeats).
   // Real questions go to the AI; without an answer the closing message is sent once, then a person takes over.
   async afterFlow(message) {
+    const visit = this.visitStep();
+    if (visit && this.state.done && message.type === 'text') {
+      const text = textOf(message);
+      const req = parseRequestedTime(text, new Date(), this.visitHours(visit));
+      if (req || BOOK_INTENT.test(text)) {
+        this.reopenVisit(visit);
+        if (req) return this.offerTime(visit, req);
+        const it = await this.item(this.state.itemId);
+        return this.ask({ ...visit, text: `Sure! ${it ? `When would you like to ${this.visitWord()} *${it.name}*?` : `When would you like to ${this.visitWord()}?`} Pick a time below, or type the day and time you prefer 👇` });
+      }
+    }
     if (isAck(message)) {
       if (this.state.done && !this.state.closed) { this.state.closed = true; await this.bot.text(this.phone, this.msg('completed')); }
       return null;
@@ -516,6 +534,41 @@ export class Conversation {
     if (!this.state.done) return null;
     if (!this.state.closed) { this.state.closed = true; return this.bot.text(this.phone, this.msg('completed')); }
     return this.handoff(message, null);
+  }
+
+  // ---------- booking ----------
+  visitStep() { return this.flow.steps.find((s) => s.type === 'slots') || null; }
+  visitWord() { return this.tenant.industry === 'real_estate' ? 'visit' : 'book'; }
+  visitHours(step) { return { from: step.hoursFrom || '09:00', to: step.hoursTo || '19:00' }; }
+  /** Back to the time step after a finished chat (one booking per visit; each new one alerts the team). */
+  reopenVisit(visit) {
+    this.state.done = false; this.state.closed = false;
+    this.state.stepId = visit.id; this.state.unexpected = 0;
+  }
+
+  /** The customer typed a day/time: one tap books exactly that, or say why not and show the times we have. */
+  async offerTime(step, req) {
+    const listed = buildVisitSlots(new Date(), 3, step.plan);
+    this.state.askedAt = Date.now(); this.state.askedStep = step.id; this.state.unexpected = 0;
+    if (!req.error) {
+      const others = listed.filter((s) => s.at.getTime() !== req.at.getTime()).slice(0, 2);
+      return this.bot.buttons(this.phone, `Yes, *${formatSlotLong(req.at)}* works 👍\nTap below to confirm your ${this.visitWord() === 'visit' ? 'site visit' : 'booking'}, or choose another time:`,
+        [{ id: `SLOT_${req.at.getTime()}`, title: ((t) => (`✅ ${t}`.length <= 20 ? `✅ ${t}` : t))(formatSlotShort(req.at)) }, ...others.map((s) => ({ id: s.id, title: s.title }))]);
+    }
+    const h = this.visitHours(step);
+    const why = req.error === 'hours' ? `We arrange ${this.visitWord() === 'visit' ? 'site visits' : 'bookings'} between ${clockLabel(h.from)} and ${clockLabel(h.to)}.`
+      : req.error === 'soon' ? 'That time is a little too soon for us to arrange.' : 'We can book up to 60 days ahead.';
+    return this.bot.buttons(this.phone, `${why} Please pick one of these times, or type another day and time 👇`, listed.map((s) => ({ id: s.id, title: s.title })));
+  }
+
+  /** Opened a project after their visit was booked (or while choosing a time): offer a visit for it. */
+  async offerVisitFor(it) {
+    const visit = this.visitStep();
+    if (!visit || !(this.state.done || this.state.stepId === visit.id)) return;
+    if (Date.now() - (this.state.offeredAt || 0) < REASK_AFTER_MS) return; // one offer per 15 minutes (each message costs)
+    this.state.offeredAt = Date.now();
+    if (this.state.done) this.reopenVisit(visit);
+    await this.ask({ ...visit, text: `Would you like to ${this.visitWord()} *${it.name}*? 🏡 Pick a time below, or type the day and time you prefer:` });
   }
 
   /** Hands the chat to the team: tells the customer, pauses the bot for this chat, alerts the team. */

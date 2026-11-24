@@ -58,6 +58,7 @@ function formatSlotShort(at, now = new Date()) {
   const local = toLocal(at);
   const today = toLocal(now);
   const tomorrow = toLocal(fromLocal(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() + 1));
+  if (sameLocalDay(local, today)) return `Today, ${formatTime(local, local.getUTCMinutes() !== 0)}`;
   if (sameLocalDay(local, tomorrow)) return `Tomorrow, ${formatTime(local, false)}`;
   return `${DAYS_SHORT[local.getUTCDay()]} ${local.getUTCDate()} ${MONTHS[local.getUTCMonth()]}, ${formatTime(local, false)}`;
 }
@@ -110,4 +111,55 @@ function parseSlotId(id) {
   return at;
 }
 
-export { buildVisitSlots, parseSlotId, formatSlotShort, formatSlotLong, DEFAULT_PLAN };
+// ---------- a day and time the customer typed ("today 4 pm", "tomorrow at 11", "Sat 5:30pm", "29 Nov 4 o'clock") ----------
+const WD = { sun: 0, sunday: 0, mon: 1, monday: 1, tue: 2, tues: 2, tuesday: 2, wed: 3, weds: 3, wednesday: 3, thu: 4, thur: 4, thurs: 4, thursday: 4, fri: 5, friday: 5, sat: 6, saturday: 6 };
+const MO = { jan: 0, feb: 1, mar: 2, apr: 3, may: 4, jun: 5, jul: 6, aug: 7, sep: 8, sept: 8, oct: 9, nov: 10, dec: 11 };
+const NOT_TIME = '(?!\\s*(?:km|kms|bhk|lakh|lakhs|lac|cr|crore|crores|sq|sqft|sft|acre|acres|floor|th|st|nd|rd|%|k\\b|l\\b))';
+const hm = (s) => { const [h, m] = String(s).split(':').map(Number); return (h || 0) * 60 + (m || 0); };
+
+/**
+ * The visit time a customer typed, in site-local time. Returns null when the message names no clock time,
+ * { at } when it can be booked, or { at, error: 'soon' | 'hours' | 'far' } when it can't.
+ * Hours without am/pm: 1–8 → PM (nobody visits a site at 4 AM), 9–12 as written.
+ */
+function parseRequestedTime(text, now = new Date(), { from = '09:00', to = '19:00', leadMinutes = 60 } = {}) {
+  const s = ` ${String(text || '').toLowerCase().replace(/[’‘`]/g, "'").replace(/\s+/g, ' ')} `;
+  let h = null; let mi = 0; let mer = null; let m;
+  if ((m = new RegExp(`(?<![\\d₹.])(\\d{1,2})[:.](\\d{2})\\s*(a\\.?m\\.?|p\\.?m\\.?)?${NOT_TIME}`).exec(s))) { h = +m[1]; mi = +m[2]; mer = m[3]; }
+  else if ((m = /(?<![\d₹.])(\d{1,2})\s*(a\.?m\.?|p\.?m\.?)(?![a-z])/.exec(s))) { h = +m[1]; mer = m[2]; }
+  else if ((m = /(?<![\d₹.])(\d{1,2})\s*o\s?'?\s?clock/.exec(s))) { h = +m[1]; }
+  else if ((m = new RegExp(`\\b(?:at|@|by|around|after)\\s*(\\d{1,2})\\b${NOT_TIME}`).exec(s))) { h = +m[1]; }
+  else if (/\bnoon\b/.test(s)) h = 12;
+  else if (/\b(evening)\b/.test(s)) h = 17;
+  else if (/\b(morning)\b/.test(s)) h = 11;
+  else if (/\b(afternoon)\b/.test(s)) h = 15;
+  if (h == null || h > 23 || mi > 59) return null;
+  if (mer) { if (h < 1 || h > 12) return null; h = (h % 12) + (mer[0] === 'p' ? 12 : 0); }
+  else if (h >= 1 && h <= 8) h += 12;
+
+  const today = toLocal(now);
+  let [y, mo, d] = [today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate()];
+  let dayGiven = true; let wd;
+  if (/\bday after (tomorrow|tmrw|tmr)\b/.test(s)) d += 2;
+  else if (/\b(tomorrow|tmrw|tmr|tomorow|tommorow|tommorrow|tomoro)\b/.test(s)) d += 1;
+  else if (/\b(today|tonight|todays)\b/.test(s)) { /* today */ }
+  else if ((wd = Object.keys(WD).find((k) => new RegExp(`\\b(next |this |coming )?${k}\\b`).test(s))) !== undefined) {
+    d += (WD[wd] - today.getUTCDay() + 7) % 7;
+  } else if ((m = /\b(\d{1,2})(?:st|nd|rd|th)?\s*(?:of\s+)?(jan|feb|mar|apr|may|jun|jul|aug|sept?|oct|nov|dec)[a-z]*\b/.exec(s)) || (m = /\b(jan|feb|mar|apr|may|jun|jul|aug|sept?|oct|nov|dec)[a-z]*\s*(\d{1,2})(?:st|nd|rd|th)?\b/.exec(s))) {
+    const [dd, mm] = /\d/.test(m[1]) ? [+m[1], MO[m[2]]] : [+m[2], MO[m[1]]];
+    d = dd; mo = mm; if (fromLocal(y, mo, d, 23, 59) < now) y += 1;
+  } else dayGiven = false;
+
+  let at = fromLocal(y, mo, d, h, mi);
+  // "4 pm" with no day: today if there is still time, else tomorrow.
+  if (!dayGiven && at.getTime() < now.getTime() + leadMinutes * 60000) at = fromLocal(y, mo, d + 1, h, mi);
+  const mins = h * 60 + mi;
+  if (at.getTime() < now.getTime() + leadMinutes * 60000) return { at, error: 'soon' };
+  if (mins < hm(from) || mins > hm(to)) return { at, error: 'hours' };
+  if (at.getTime() > now.getTime() + MAX_DAYS_AHEAD * 24 * 3600 * 1000) return { at, error: 'far' };
+  return { at };
+}
+/** "9 AM" for "09:00". */
+const clockLabel = (s) => { const v = hm(s); const h = Math.floor(v / 60); const m = v % 60; return `${h % 12 || 12}${m ? `:${String(m).padStart(2, '0')}` : ''} ${h < 12 ? 'AM' : 'PM'}`; };
+
+export { buildVisitSlots, parseSlotId, formatSlotShort, formatSlotLong, DEFAULT_PLAN, parseRequestedTime, clockLabel };
