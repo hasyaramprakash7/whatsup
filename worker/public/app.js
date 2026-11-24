@@ -1007,34 +1007,39 @@
     const t = state.tenant; const tp = t.templates || {};
     $('#page').innerHTML = `<div class="page-inner">
       <div class="page-head"><div><h1>Broadcast</h1><p>Add numbers by hand or upload a contact list, then send your approved WhatsApp template. Replies flow straight into your flow, the AI and your inbox.</p></div></div>
-      <div class="overview-grid">
-        <div class="card"><div class="card-head"><span class="section-icon">${icon('upload')}</span><div><h2>Contacts</h2><p>Type numbers in directly, or import a CSV with a <code>phone</code> column (and optionally <code>name</code>)</p></div></div>
-          <div class="card-body stack">
-            <form class="stack" id="bc-manual-form" autocomplete="off" style="gap:8px"><strong>Add a number</strong>
-              <div class="row wrap" style="gap:8px;align-items:flex-end">
-                <label class="field grow" style="min-width:140px;margin:0"><span>Name</span><input class="input" id="bc-m-name" maxlength="80" placeholder="Ravi Kumar" /></label>
-                <label class="field grow" style="min-width:160px;margin:0"><span>WhatsApp number</span><textarea class="input" id="bc-m-phone" rows="1" inputmode="tel" placeholder="98765 43210" style="resize:vertical;min-height:42px;padding-top:10px"></textarea></label>
-                <button class="btn primary" type="submit" style="height:42px">${icon('plus')}Add</button></div>
-              <span class="hint">Press Enter to add. 10-digit numbers get +91. To add many at once, paste lines like <code>Ravi, 9876543210</code> into the number box.</span>
-              <div id="bc-m-error"></div>
-              <div id="bc-m-list" class="row wrap" style="gap:6px"></div></form>
-            <div class="row" style="gap:10px;color:var(--text-3)"><span style="flex:1;height:1px;background:var(--border)"></span><span class="small">or import a CSV</span><span style="flex:1;height:1px;background:var(--border)"></span></div>
-            <label class="dropzone" id="csv-drop"><input type="file" id="csv-file" accept=".csv,text/csv" />
-              <span class="section-icon">${icon('upload', 'lg')}</span><strong>Drop your CSV here or click to choose</strong><span class="hint">10-digit Indian numbers get +91 automatically · you choose who gets it before sending</span></label>
-            <div id="csv-picked"></div>
-            <div id="csv-contacts"></div>
-            <button class="btn primary" id="send-broadcast" disabled style="height:42px">${icon('send')}Send broadcast</button>
-            <div id="broadcast-result"></div></div></div>
+      <div class="overview-grid bc-grid">
         <div class="stack">
+          <div class="card"><div class="card-head"><span class="section-icon">${icon('plus')}</span><div><h2>Add contacts</h2><p>Type numbers in directly, or import a CSV with a <code>phone</code> column (and optionally <code>name</code>)</p></div></div>
+            <div class="card-body stack">
+              <form class="stack" id="bc-manual-form" autocomplete="off" style="gap:8px"><strong>Add a number</strong>
+                <div class="row wrap" style="gap:8px;align-items:flex-end">
+                  <label class="field grow" style="min-width:140px;margin:0"><span>Name</span><input class="input" id="bc-m-name" maxlength="80" placeholder="Ravi Kumar" /></label>
+                  <label class="field grow" style="min-width:160px;margin:0"><span>WhatsApp number</span><textarea class="input" id="bc-m-phone" rows="1" inputmode="tel" placeholder="98765 43210" style="resize:vertical;min-height:42px;padding-top:10px"></textarea></label>
+                  <button class="btn primary" type="submit" style="height:42px">${icon('plus')}Add</button></div>
+                <span class="hint">Press Enter to add. 10-digit numbers get +91. To add many at once, paste lines like <code>Ravi, 9876543210</code> into the number box.</span>
+                <div id="bc-m-error"></div></form>
+              <div class="row" style="gap:10px;color:var(--text-3)"><span style="flex:1;height:1px;background:var(--border)"></span><span class="small">or import a CSV</span><span style="flex:1;height:1px;background:var(--border)"></span></div>
+              <label class="dropzone" id="csv-drop"><input type="file" id="csv-file" accept=".csv,text/csv" />
+                <span class="section-icon">${icon('upload', 'lg')}</span><strong>Drop your CSV here or click to choose</strong><span class="hint">10-digit Indian numbers get +91 automatically · you choose who gets it before sending</span></label>
+              <div id="csv-picked"></div></div></div>
           <div class="card card-pad stack"><div class="row"><span class="section-icon indigo">${icon('template')}</span><div><h2>Template</h2><p class="muted small">Change it in <a href="#/settings">Settings</a></p></div></div>
             <dl class="kv"><dt>Name</dt><dd><code>${esc(tp.broadcastName || 'Server default')}</code></dd><dt>Language</dt><dd>${esc(tp.broadcastLanguage || 'Server default')}</dd>
             <dt>Variables</dt><dd>${tp.broadcastName && tp.broadcastHasParams === false ? 'None' : '{{1}} customer name · {{2}} business name'}</dd></dl></div>
-          <div class="card"><div class="card-head"><span class="section-icon blue">${icon('activity')}</span><div><h2>Sending queue</h2><p>Paced to protect your WhatsApp quality rating</p></div><span class="spacer"></span><button class="btn sm" id="q-refresh">${icon('refresh', 'sm')}Refresh</button></div><div class="card-body" id="queue-stats"></div></div>
           <div class="card card-pad stack"><div class="row"><span class="section-icon amber">${icon('info')}</span><h2>Good to know</h2></div>
             <ul style="margin:0;padding-left:18px;color:var(--text-2);display:grid;gap:6px">
               <li>Daily limit follows your WhatsApp tier (Tier ${t.tier ?? 0}).</li>
               <li>Customers who opted out are never messaged again.</li>
               <li>Numbers WhatsApp refuses (e.g. not on your test list) show as Failed with the reason.</li></ul></div>
+        </div>
+        <div class="stack bc-side">
+          <div class="card"><div class="card-head"><span class="section-icon">${icon('users')}</span><div><h2>Send list</h2><p>Everyone you added. Untick anyone you don't want to send to.</p></div></div>
+            <div class="card-body stack">
+              <div id="bc-m-list" class="row wrap" style="gap:6px"></div>
+              <div id="bc-empty" class="empty" style="padding:20px 8px"><span class="section-icon indigo">${icon('users', 'lg')}</span><h3>No contacts yet</h3><p>Add a number or import a CSV on the left. They'll show up here.</p></div>
+              <div id="csv-contacts"></div>
+              <button class="btn primary" id="send-broadcast" disabled style="height:42px">${icon('send')}Send broadcast</button>
+              <div id="broadcast-result"></div></div></div>
+          <div class="card"><div class="card-head"><span class="section-icon blue">${icon('activity')}</span><div><h2>Sending queue</h2><p>Paced to protect your WhatsApp quality rating</p></div><span class="spacer"></span><button class="btn sm" id="q-refresh">${icon('refresh', 'sm')}Refresh</button></div><div class="card-body" id="queue-stats"></div></div>
         </div></div></div>`;
     let file = null;
     const manual = []; // [{ name, phone }] typed in by hand
@@ -1114,6 +1119,7 @@
     const updateSendButton = () => {
       const btn = $('#send-broadcast'); if (!btn || btn.querySelector('.spinner')) return;
       const n = bc.sel.size;
+      const empty = $('#bc-empty'); if (empty) empty.hidden = hasInput();
       btn.disabled = !hasInput() || !bc.contacts || !n;
       btn.innerHTML = `${icon('send')}${bc.contacts ? `Send to ${n.toLocaleString()} selected` : 'Send broadcast'}`;
     };
