@@ -966,3 +966,44 @@ img, video { max-width: 100%; }
   .notify-btn { width: 36px !important; }
 }
 .notify-pref .grow { flex: 1; min-width: 0; }
+
+/* ===== Exact Bluxury picture: opening screen and brand panels ===== */
+/* The picture is 634x591; with "cover" its height on screen is max(100vh, 93.22vw).
+   LUXURY ends 18.9% of that height below the centre, so "WhatsApp AI" sits right under it on every screen. */
+.splash { background: #03352a; overflow: hidden; display: block; }
+.splash::before { content: ""; position: absolute; inset: 0; background: url(/brand-splash.jpg) center / cover no-repeat; animation: splashZoom 1.4s cubic-bezier(.2,.8,.2,1) both; }
+.splash-tag { position: absolute; left: 0; right: 0; text-align: center; top: calc(50% + 0.195 * max(100vh, 93.22vw) + 6px); font-size: clamp(12px, calc(0.034 * max(100vh, 93.22vw)), 22px); animation: splashFade .6s .45s ease both; }
+.splash-bar { position: absolute; left: 50%; top: calc(50% + 0.195 * max(100vh, 93.22vw) + 48px); transform: translateX(-50%); margin: 0; animation: splashFade .6s .7s ease both; }
+@supports (height: 100dvh) {
+  .splash-tag { top: calc(50% + 0.195 * max(100dvh, 93.22vw) + 6px); font-size: clamp(12px, calc(0.034 * max(100dvh, 93.22vw)), 22px); }
+  .splash-bar { top: calc(50% + 0.195 * max(100dvh, 93.22vw) + 48px); }
+}
+@keyframes splashZoom { from { transform: scale(1.12); opacity: .2; } to { transform: none; opacity: 1; } }
+@keyframes splashFade { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+.splash-bar { transform: translateX(-50%); }
+
+.login-brand { position: relative; display: none; height: 200px; padding: 0; background: #03352a url(/brand-splash.jpg) center 58% / cover no-repeat; }
+.login-brand .brand-tag { position: absolute; left: 0; right: 0; bottom: 16px; text-align: center; }
+.features-head { position: relative; height: 210px; padding: 0; align-content: end; background: #03352a url(/brand-splash.jpg) center 56% / cover no-repeat; }
+.features-head .brand-tag { margin-top: 0; }
+.features-head p { margin: 4px 0 14px; }
+@media (max-width: 1024px) { .login-brand { display: block; } }
+.splash .splash-bar { left: 0; right: 0; margin: 0 auto; transform: none; }
+.popup-help { border: 1px solid color-mix(in srgb, var(--brand) 30%, var(--border)); background: var(--brand-soft); border-radius: 14px; padding: 12px 14px; font-size: 13.5px; line-height: 1.5; }
+.popup-help strong.t { display: flex; align-items: center; gap: 8px; font-size: 14px; margin-bottom: 6px; color: var(--text); }
+.popup-help ol { margin: 0; padding-left: 20px; display: grid; gap: 4px; }
+.popup-help .demo { display: flex; gap: 10px; align-items: center; margin: 10px 0 2px; padding: 8px 10px; border-radius: 12px; background: var(--surface); box-shadow: var(--shadow); }
+.popup-help .demo img { width: 30px; height: 30px; border-radius: 8px; }
+.popup-help .demo b { display: block; font-size: 12.5px; }
+.popup-help .demo span { font-size: 12px; color: var(--muted); }
+/* Logo never wider than ~72% of the screen: picture height = min(100vh, 177vw); edges filled by a soft blurred copy. */
+.splash::after { content: ""; position: absolute; inset: -40px; z-index: 0; background: url(/brand-splash.jpg) center / cover no-repeat; filter: blur(28px) saturate(1.1); }
+.splash::before { z-index: 1; background-size: auto min(100vh, 177vw); -webkit-mask-image: radial-gradient(closest-side, #000 72%, transparent 100%); mask-image: radial-gradient(closest-side, #000 72%, transparent 100%); }
+.splash .splash-tag, .splash .splash-bar { z-index: 2; }
+.splash .splash-tag { top: calc(50% + 0.195 * min(100vh, 177vw) + 10px); font-size: clamp(11px, calc(0.032 * min(100vh, 177vw)), 22px); }
+.splash .splash-bar { top: calc(50% + 0.195 * min(100vh, 177vw) + 52px); }
+@supports (height: 100dvh) {
+  .splash::before { background-size: auto min(100dvh, 177vw); }
+  .splash .splash-tag { top: calc(50% + 0.195 * min(100dvh, 177vw) + 10px); font-size: clamp(11px, calc(0.032 * min(100dvh, 177vw)), 22px); }
+  .splash .splash-bar { top: calc(50% + 0.195 * min(100dvh, 177vw) + 52px); }
+}

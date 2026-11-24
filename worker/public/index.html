@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
   <title>Bluxury WhatsApp AI</title>
   <meta name="description" content="Bluxury WhatsApp AI — your business on WhatsApp: live inbox, AI assistant, bookings, broadcasts and instant notifications." />
-  <meta name="theme-color" content="#04382c" />
+  <meta name="theme-color" content="#03352a" />
   <link rel="icon" type="image/png" href="/favicon.png" />
   <link rel="manifest" href="/manifest.webmanifest" />
   <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
@@ -15,17 +15,14 @@
   <meta name="apple-mobile-web-app-title" content="Bluxury AI" />
   <meta name="application-name" content="Bluxury WhatsApp AI" />
   <meta name="format-detection" content="telephone=no" />
-  <link rel="preload" as="image" href="/brand-logo.png" />
+  <link rel="preload" as="image" href="/brand-splash.jpg" />
   <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
   <!-- Opening screen (shown while the app starts) -->
   <div id="splash" class="splash" aria-hidden="true">
-    <div class="splash-inner">
-      <img src="/brand-logo.png" alt="" class="splash-logo" />
-      <div class="brand-tag">WhatsApp AI</div>
-      <div class="splash-bar"><i></i></div>
-    </div>
+    <div class="splash-tag brand-tag">WhatsApp AI</div>
+    <div class="splash-bar"><i></i></div>
   </div>
 
   <!-- Sign in -->
@@ -44,7 +41,7 @@
     </aside>
     <main class="login-panel">
       <div class="login-card">
-        <div class="login-brand"><img src="/brand-logo.png" alt="Bluxury" /><div class="brand-tag">WhatsApp AI</div></div>
+        <div class="login-brand" role="img" aria-label="Bluxury WhatsApp AI"><div class="brand-tag">WhatsApp AI</div></div>
         <h2>Welcome back</h2>
         <p class="muted">Sign in with the API key you received from your administrator.</p>
         <form id="login-form">

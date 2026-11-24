@@ -278,7 +278,7 @@
   function hideSplash() {
     const el = $('#splash'); if (!el || el.classList.contains('out')) return;
     // A short, calm opening in the installed app; instant in a browser tab.
-    const min = matchMedia('(display-mode: standalone)').matches || navigator.standalone ? 900 : 250;
+    const min = matchMedia('(display-mode: standalone)').matches || navigator.standalone ? 1500 : 300;
     setTimeout(() => { el.classList.add('out'); setTimeout(() => el.remove(), 450); }, Math.max(0, min - (Date.now() - splashStart)));
   }
 
@@ -299,7 +299,7 @@
   if ($('#hero-features')) $('#hero-features').innerHTML = featureHtml();
   function showFeatures() {
     $('#shell').classList.remove('nav-open');
-    modal(`<div class="features-head"><img src="/brand-logo.png" alt="Bluxury" /><div class="brand-tag">WhatsApp AI</div><p>Everything in the app</p></div>
+    modal(`<div class="features-head" role="img" aria-label="Bluxury WhatsApp AI"><div class="brand-tag">WhatsApp AI</div><p>Everything in the app</p></div>
       <div class="card-body feature-list">${featureHtml('feature-row')}</div>
       <div class="modal-foot">${isInstalled() ? '' : '<button class="btn" id="feat-install">' + icon('download') + 'Install the app</button>'}<button class="btn primary" data-close>Close</button></div>`, {
       onMount: (el, close) => el.querySelector('#feat-install')?.addEventListener('click', () => { close(); installApp(); }),
@@ -385,6 +385,27 @@
     const sub = await currentSubscription();
     if (sub) { const res = await api('POST', '/push/subscribe', { subscription: sub.toJSON(), prefs }); state.push.prefs = res.prefs; }
   }
+  /** Phones decide whether a notification pops up at the top; a web app can't switch that on itself. */
+  function popupHelp() {
+    const ua = navigator.userAgent;
+    const demo = `<div class="demo"><img src="/icon-192.png" alt="" /><div><b>Ravi Kumar</b><span>Hi, is the 2BHK still available?</span></div></div>`;
+    if (/Android/.test(ua)) {
+      const samsung = /SM-|Samsung/i.test(ua);
+      return `<div class="popup-help"><strong class="t">${icon('bell')}Show notifications at the top of the screen</strong>
+        Android plays only a sound for new apps until you allow pop-ups. Do this once:
+        <ol>
+          <li>Press <b>Send a test notification</b>, then pull down the notification bar.</li>
+          <li><b>Long-press</b> the Bluxury notification → tap <b>⚙ Settings</b>${samsung ? ' (or <b>Notification settings</b>)' : ''}.</li>
+          <li>${samsung ? 'Set <b>Alert</b> (not Silent) and turn on <b>Pop-up</b> / <b>Show as pop-up</b>.' : 'Choose <b>Default / Alerting</b> (not Silent) and turn on <b>Pop on screen</b>.'}</li>
+          <li>Also allow <b>Lock screen</b> and <b>Badge</b>. If notifications stop when the phone sleeps: <b>Settings → Apps → Bluxury AI → Battery → Unrestricted</b>.</li>
+        </ol>${demo}</div>`;
+    }
+    if (appleDevice()) {
+      return `<div class="popup-help"><strong class="t">${icon('bell')}Show notifications at the top of the screen</strong>
+        <ol><li>iPhone <b>Settings → Notifications → Bluxury AI</b>.</li><li>Turn on <b>Allow Notifications</b>, tick <b>Lock Screen</b>, <b>Notification Centre</b> and <b>Banners</b>.</li><li>Set <b>Banner Style</b> to <b>Persistent</b> to keep them on top until you tap.</li></ol>${demo}</div>`;
+    }
+    return '';
+  }
   function openNotifySheet() {
     $('#shell').classList.remove('nav-open');
     const draw = (el, close) => {
@@ -408,6 +429,7 @@
             ${PUSH_KINDS.map(([k, t, d]) => `<label class="notify-pref"><div class="grow"><strong>${t}</strong><small>${d}</small></div><span class="switch"><input type="checkbox" data-pk="${k}" ${prefs[k] !== false ? 'checked' : ''} /><span class="track"></span></span></label>`).join('')}
           </div>
           ${p.on ? `<button class="btn" id="push-test">${icon('send')}Send a test notification</button>` : ''}
+          ${popupHelp()}
           <p class="hint">Each phone or computer is turned on separately. ${isAdmin() ? 'As admin you get notifications for every business.' : ''}</p>
         </div>`;
       hydrateIcons(el);
