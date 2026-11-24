@@ -131,7 +131,7 @@ export async function getSubscription(env, endpoint) {
 // ---------- delivery health: did alerts really reach this phone while the app was closed? ----------
 // Every alert carries its send time; the phone's background script reports back the moment it arrives.
 // A phone that blocks the app in the background gets them only when the app is opened → arrives minutes late.
-export const SLOW_MS = 90 * 1000;
+export const SLOW_MS = 30 * 1000; // a normal alert arrives in under 5 s; held-back ones arrive when the app is opened
 const outstanding = (r) => r.pending_at != null; // cleared when that alert (or a newer one) arrives
 
 /** Remembers the oldest alert this device hasn't confirmed yet. */
