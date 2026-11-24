@@ -1,0 +1,13 @@
+# Security headers for every dashboard file (Cloudflare Workers static assets).
+/*
+  Content-Security-Policy: default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: blob: https://pub-8d93705764b8407a957deeec1fc05dda.r2.dev https://tile.openstreetmap.org https://*.tile.openstreetmap.org https://unpkg.com; media-src 'self' blob:; connect-src 'self' wss://whatsapp-agent.hasya7893828468.workers.dev ws://localhost:8787 ws://localhost:8791; frame-src https://maps.google.com https://www.google.com; worker-src 'self'; manifest-src 'self'; font-src 'self'; object-src 'none'; base-uri 'self'; form-action 'self'; frame-ancestors 'none'
+  X-Content-Type-Options: nosniff
+  X-Frame-Options: DENY
+  Referrer-Policy: strict-origin-when-cross-origin
+  Strict-Transport-Security: max-age=31536000; includeSubDomains
+  Permissions-Policy: camera=(), microphone=(), geolocation=(), payment=(), usb=(), interest-cohort=()
+  Cross-Origin-Opener-Policy: same-origin
+
+/sw.js
+  Cache-Control: no-cache
+  Service-Worker-Allowed: /

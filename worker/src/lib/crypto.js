@@ -55,3 +55,26 @@ export async function decryptToken(secret, stored) {
   const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: fromB64url(iv) }, await aesKey(secret), fromB64url(ct));
   return dec.decode(pt);
 }
+
+// ---------- live-update passes (HMAC-signed, 60 s) ----------
+async function ticketKey(env) {
+  const base = env.TOKEN_ENCRYPTION_KEY || env.ADMIN_API_KEY;
+  if (!base) throw new Error('No signing secret configured');
+  const raw = await crypto.subtle.digest('SHA-256', enc.encode(`ws-ticket:${base}`));
+  return crypto.subtle.importKey('raw', raw, { name: 'HMAC', hash: 'SHA-256' }, false, ['sign', 'verify']);
+}
+export async function signWsTicket(env, tenantId, ttlSec = 60) {
+  const body = b64url(enc.encode(JSON.stringify({ t: String(tenantId), e: Math.floor(Date.now() / 1000) + ttlSec, n: b64url(crypto.getRandomValues(new Uint8Array(9))) })));
+  const sig = b64url(new Uint8Array(await crypto.subtle.sign('HMAC', await ticketKey(env), enc.encode(body))));
+  return `${body}.${sig}`;
+}
+export async function verifyWsTicket(env, ticket, tenantId) {
+  try {
+    const [body, sig] = String(ticket || '').split('.');
+    if (!body || !sig) return false;
+    if (!(await crypto.subtle.verify('HMAC', await ticketKey(env), fromB64urlPad(sig), enc.encode(body)))) return false;
+    const { t, e } = JSON.parse(dec.decode(fromB64urlPad(body)));
+    return t === String(tenantId) && e >= Math.floor(Date.now() / 1000);
+  } catch { return false; }
+}
+const fromB64urlPad = (s) => fromB64url(s + '='.repeat((4 - (s.length % 4)) % 4));

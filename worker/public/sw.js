@@ -20,15 +20,15 @@ self.addEventListener('fetch', (e) => {
   )));
 });
 
-/** True only if an open dashboard page answers (within 600 ms) that it is on screen and focused. */
-async function appOnScreen() {
+/** True only if an open dashboard page answers (within 600 ms) that this exact chat is open on screen right now. */
+async function chatOnScreen(phone) {
   const wins = (await self.clients.matchAll({ type: 'window', includeUncontrolled: true })).filter((w) => w.visibilityState === 'visible');
   if (!wins.length) return false;
   const answers = await Promise.all(wins.map((w) => new Promise((resolve) => {
     const ch = new MessageChannel();
     const timer = setTimeout(() => resolve(false), 600);
     ch.port1.onmessage = (ev) => { clearTimeout(timer); resolve(!!(ev.data && ev.data.onScreen)); };
-    try { w.postMessage({ type: 'push-check' }, [ch.port2]); } catch { clearTimeout(timer); resolve(false); }
+    try { w.postMessage({ type: 'push-check', phone }, [ch.port2]); } catch { clearTimeout(timer); resolve(false); }
   })));
   return answers.some(Boolean);
 }
@@ -37,10 +37,13 @@ self.addEventListener('push', (e) => {
   let d = {};
   try { d = e.data ? e.data.json() : {}; } catch { d = { title: 'Bluxury WhatsApp AI', body: e.data ? e.data.text() : '' }; }
   e.waitUntil((async () => {
-    // Skip only a message the person is looking at right now in the open dashboard (it shows it on screen).
+    // Like WhatsApp: every message notifies, except the chat you are reading right now.
     // Phones keep backgrounded apps "visible" but frozen, so ask the page itself: a frozen page can't answer → notify.
-    if (d.kind === 'message' && !isApple && await appOnScreen()) return;
-    if (self.navigator.setAppBadge && d.kind === 'message') self.navigator.setAppBadge().catch(() => {});
+    try {
+      const phone = (String(d.url || '').match(/#\/inbox\/(\d+)/) || [])[1];
+      if (d.kind === 'message' && phone && !isApple && await chatOnScreen(phone)) return;
+    } catch { /* when unsure, notify */ }
+    try { if (d.kind === 'message' && self.navigator.setAppBadge) { const p = self.navigator.setAppBadge(); if (p && p.catch) p.catch(() => {}); } } catch { /* badge is optional */ }
     await self.registration.showNotification(d.title || 'Bluxury WhatsApp AI', {
       body: d.body || '',
       icon: ICON,

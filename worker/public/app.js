@@ -464,7 +464,7 @@
   navigator.serviceWorker?.addEventListener('message', async (e) => {
     const d = e.data || {};
     // Background script asks before skipping a message notification: answer only if really on screen.
-    if (d.type === 'push-check') { e.ports?.[0]?.postMessage({ onScreen: document.visibilityState === 'visible' && document.hasFocus() && !!state.auth }); return; }
+    if (d.type === 'push-check') { e.ports?.[0]?.postMessage({ onScreen: document.visibilityState === 'visible' && document.hasFocus() && !!state.auth && state.route.page === 'inbox' && state.inbox?.active === d.phone }); return; }
     if (d.type !== 'open' || !state.auth) return;
     if (d.tenantId && isAdmin() && d.tenantId !== state.tenantId && state.tenants.some((t) => t._id === d.tenantId)) await selectTenant(d.tenantId, { silent: true });
     location.hash = (d.url || '/#/overview').replace(/^\/?/, '').replace(/^[^#]*/, '');
@@ -604,16 +604,26 @@
   function disconnectLive() {
     const l = state.live;
     state.live = null;
-    if (l) { clearInterval(l.ping); clearTimeout(l.retry); l.ws.onclose = null; try { l.ws.close(); } catch { /* */ } }
+    if (l) { clearInterval(l.ping); clearTimeout(l.retry); if (l.ws) { l.ws.onclose = null; try { l.ws.close(); } catch { /* */ } } }
   }
-  function connectLive() {
+  async function connectLive() {
     disconnectLive();
     if (!state.tenantId || !getKey()) return;
-    const url = `${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?tenant=${encodeURIComponent(state.tenantId)}&token=${encodeURIComponent(getKey())}`;
-    const ws = new WebSocket(url);
-    const live = { ws, ping: null, retry: null, tenantId: state.tenantId };
+    const live = { ws: null, ping: null, retry: null, tenantId: state.tenantId };
     state.live = live;
     setLive('connecting');
+    const retryLater = () => {
+      if (state.live !== live) return;
+      setLive('off');
+      const delay = Math.min(30000, 1000 * 2 ** liveRetry++);
+      live.retry = setTimeout(() => { if (state.live === live) connectLive(); }, delay);
+    };
+    // A one-minute signed pass: the API key never goes into the connection address (which can end up in logs).
+    let ticket;
+    try { ({ ticket } = await api('POST', `/ws-ticket/${live.tenantId}`)); } catch { retryLater(); return; }
+    if (state.live !== live) return;
+    const ws = new WebSocket(`${location.protocol === 'https:' ? 'wss' : 'ws'}://${location.host}/ws?tenant=${encodeURIComponent(live.tenantId)}&ticket=${encodeURIComponent(ticket)}`);
+    live.ws = ws;
     ws.onopen = () => { liveRetry = 0; setLive('on'); live.ping = setInterval(() => { try { ws.send('ping'); } catch { /* */ } }, 25000); };
     ws.onmessage = (e) => {
       let msg; try { msg = JSON.parse(e.data); } catch { return; } // "pong"
@@ -622,13 +632,7 @@
       else if (msg.event === 'lead:update') onLeadUpdate(msg.data.lead);
       else if (msg.event === 'alert') onLiveAlert(msg.data);
     };
-    ws.onclose = () => {
-      clearInterval(live.ping);
-      if (state.live !== live) return;
-      setLive('off');
-      const delay = Math.min(30000, 1000 * 2 ** liveRetry++);
-      live.retry = setTimeout(() => { if (state.live === live) connectLive(); }, delay);
-    };
+    ws.onclose = () => { clearInterval(live.ping); retryLater(); };
   }
 
   function onLiveMessage({ message, lead }) {
@@ -642,8 +646,8 @@
     if (message.direction === 'in') {
       refreshUnread();
       const viewing = state.route.page === 'inbox' && ib?.active === message.phone && document.visibilityState === 'visible';
-      if (!viewing) toast(displayName(lead || { phone: message.phone }), message.text || 'New message', { kind: 'chat', onClick: () => { location.hash = `#/inbox/${message.phone}`; } });
-      notifyDesktop(displayName(lead || { phone: message.phone }), message.text || message.meta?.label || 'New message', message.phone);
+      if (!viewing && !state.push?.on) toast(displayName(lead || { phone: message.phone }), message.text || 'New message', { kind: 'chat', onClick: () => { location.hash = `#/inbox/${message.phone}`; } });
+      if (!state.push?.on) notifyDesktop(displayName(lead || { phone: message.phone }), message.text || message.meta?.label || 'New message', message.phone);
     }
     if (state.route.page === 'overview') refreshOverview();
   }
@@ -665,7 +669,7 @@
     n.onclick = () => { window.focus(); location.hash = `#/inbox/${phone}`; n.close(); };
   }
   function onLiveAlert(a) {
-    if (!a?.phone) return;
+    if (!a?.phone || state.push?.on) return; // phone notifications on: the system notification is the alert
     const who = a.name || fmtPhone(a.phone);
     const booking = a.kind === 'booking';
     chime();
@@ -2411,4 +2415,5 @@
   });
   setInterval(() => { if (state.route.page === 'inbox' && state.inbox?.lead && !$('#reply-text')?.value) renderComposer(); }, 60e3);
   if (getKey()) startSession(); else showLogin();
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js?v=5', { updateViaCache: 'none' }).then((r) => r.update()).catch(() => {});
 })();

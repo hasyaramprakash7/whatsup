@@ -36,7 +36,7 @@ export class BusinessHub extends DurableObject {
       // Finish the phone notification before returning (background work can be cut off once this call ends),
       // but never hold up the caller for more than a few seconds.
       const job = this.pushFor(event, data, tenantId);
-      if (job) await Promise.race([job.catch((err) => console.warn('[Push]', err.message)), new Promise((r) => setTimeout(r, 4000))]);
+      if (job) await Promise.race([job.catch((err) => console.warn('[Push]', err.message)), new Promise((r) => setTimeout(r, 2500))]);
     }
     return true;
   }

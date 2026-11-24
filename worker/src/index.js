@@ -6,7 +6,7 @@ import {
   getTenant, getTenantByPhoneNumberId, getTenantByKeyHash, listTenants, insertTenant, updateTenant, publicTenant, tenantAccessToken,
   getLead, upsertLead, updateLeads, listLeads, leadStats, listChats, listMessages, applyMessageStatus,
 } from './lib/db.js';
-import { sha256Hex, safeEqual, verifyMetaSignature, generateApiKey, encryptToken, TENANT_KEY_PREFIX } from './lib/crypto.js';
+import { sha256Hex, safeEqual, verifyMetaSignature, generateApiKey, encryptToken, TENANT_KEY_PREFIX, signWsTicket, verifyWsTicket } from './lib/crypto.js';
 import { normalizePhone, isValidPhone, parseCsv, pickPhone, pickName, nowIso } from './lib/text.js';
 import { validateFlow, validateProfile, validateAi, flowFields } from './lib/flow.js';
 import { TEMPLATES, flowFromTemplate, getTemplate, personalizeFlow } from './lib/templates.js';
@@ -27,6 +27,31 @@ const REPLY_WINDOW_MS = 24 * 3600 * 1000;
 const fail = (c, status, error, extra = {}) => c.json({ success: false, error, ...extra }, status);
 const isId = (s) => /^[0-9a-f-]{36}$/i.test(String(s || ''));
 
+// ---------------- security ----------------
+// Browser hardening on everything the Worker answers (static files get the same from public/_headers).
+app.use('*', async (c, next) => {
+  await next();
+  if (c.res.status === 101) return; // live-update connection
+  try {
+    const h = c.res.headers;
+    h.set('X-Content-Type-Options', 'nosniff');
+    h.set('Referrer-Policy', 'strict-origin-when-cross-origin');
+    h.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+    h.set('X-Frame-Options', 'DENY');
+    if (c.req.path.startsWith('/api/')) h.set('Cache-Control', 'no-store');
+  } catch { /* read-only headers (static files carry their own from public/_headers) */ }
+});
+const MAX_BODY = { '/webhook': 2 * 1024 * 1024 };
+app.use('*', async (c, next) => {
+  const len = Number(c.req.header('content-length') || 0);
+  const max = MAX_BODY[c.req.path] ?? 12 * 1024 * 1024;   // uploads: 10 MB CSV / 5 MB photos + form overhead
+  if (len > max) return fail(c, 413, 'Request too large.');
+  return next();
+});
+const clientIp = (c) => c.req.header('cf-connecting-ip') || 'unknown';
+/** Cloudflare rate limiter; allows the request if the limiter is not configured. */
+const limited = async (binding, key) => { try { return binding ? !(await binding.limit({ key })).success : false; } catch { return false; } };
+
 app.onError((err, c) => {
   console.error('[Worker] unhandled:', err.stack || err.message);
   return fail(c, 500, 'Internal Server Error');
@@ -45,8 +70,14 @@ async function resolveApiKey(env, key) {
 const bearer = (c) => (c.req.header('authorization') || '').match(/^Bearer\s+(.+)$/i)?.[1]?.trim() || null;
 
 app.use('/api/*', async (c, next) => {
+  const ip = clientIp(c);
+  if (await limited(c.env.API_LIMIT, `api:${ip}`)) return fail(c, 429, 'Too many requests. Please wait a moment.');
   const auth = await resolveApiKey(c.env, bearer(c));
-  if (!auth) return fail(c, 401, 'Missing or invalid API key. Send "Authorization: Bearer <key>".');
+  if (!auth) {
+    // Guessing keys: after 20 wrong keys a minute from one address, block it for the rest of the minute.
+    if (await limited(c.env.AUTH_LIMIT, `auth:${ip}`)) return fail(c, 429, 'Too many failed sign-in attempts. Try again in a minute.');
+    return fail(c, 401, 'Missing or invalid API key. Send "Authorization: Bearer <key>".');
+  }
   c.set('auth', auth);
   return next();
 });
@@ -141,11 +172,12 @@ async function applyStatus(env, tenant, s) {
 // ---------------- live dashboard WebSocket ----------------
 app.get('/ws', async (c) => {
   if (c.req.header('Upgrade') !== 'websocket') return c.text('Expected a WebSocket', 426);
-  const auth = await resolveApiKey(c.env, c.req.query('token'));
   const tenantId = c.req.query('tenant');
-  if (!auth || !isId(tenantId) || (auth.role !== 'admin' && auth.tenantId !== tenantId)) return c.text('Unauthorized', 401);
+  if (!isId(tenantId) || !(await verifyWsTicket(c.env, c.req.query('ticket'), tenantId))) return c.text('Unauthorized', 401);
   return c.env.HUB.get(c.env.HUB.idFromName(tenantId)).fetch(c.req.raw);
 });
+/** One-minute pass for the live-updates connection, so the API key never appears in a URL or log. */
+app.post('/api/ws-ticket/:tid', tenantAccess(), async (c) => c.json({ success: true, ticket: await signWsTicket(c.env, c.req.param('tid')) }));
 
 // ---------------- businesses (tenants) ----------------
 const templateSummaries = () => TEMPLATES.map(({ key, name, description, icon }) => ({ key, name, description, icon, itemFields: ITEM_FIELDS[key] || ITEM_FIELDS.general }));
@@ -156,7 +188,9 @@ app.get('/api/tenants/me', (c) => c.json({ success: true, auth: c.get('auth') })
 // ---------------- phone notifications ----------------
 const pushScope = (a) => (a.role === 'admin' ? '*' : a.tenantId);
 const cleanPrefs = (p) => Object.fromEntries(NOTIFY_KINDS.map((k) => [k, p?.[k] !== false]));
-const validSub = (s) => s && typeof s.endpoint === 'string' && /^https:\/\//.test(s.endpoint) && s.endpoint.length < 1000
+const PUSH_HOSTS = [/^fcm\.googleapis\.com$/, /^android\.googleapis\.com$/, /^updates\.push\.services\.mozilla\.com$/, /(^|\.)push\.apple\.com$/, /\.notify\.windows\.com$/, /^push\.services\.mozilla\.com$/];
+const pushHostOk = (u) => { try { const x = new URL(u); return x.protocol === 'https:' && !x.port && PUSH_HOSTS.some((re) => re.test(x.hostname)); } catch { return false; } };
+const validSub = (s) => s && typeof s.endpoint === 'string' && pushHostOk(s.endpoint) && s.endpoint.length < 1000
   && typeof s.keys?.p256dh === 'string' && typeof s.keys?.auth === 'string' && s.keys.p256dh.length < 200 && s.keys.auth.length < 100;
 
 app.get('/api/push/key', (c) => c.json({ success: true, enabled: pushConfigured(c.env), publicKey: c.env.VAPID_PUBLIC_KEY || null, kinds: NOTIFY_KINDS }));
