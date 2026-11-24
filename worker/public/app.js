@@ -435,11 +435,14 @@
     };
     modal('', { onMount: draw });
   }
+  navigator.serviceWorker?.startMessages?.();
   $('#notify-btn').addEventListener('click', openNotifySheet);
   $('#notify-side').addEventListener('click', openNotifySheet);
   // Notification tapped while the app is open: go straight to that chat / page.
   navigator.serviceWorker?.addEventListener('message', async (e) => {
     const d = e.data || {};
+    // Background script asks before skipping a message notification: answer only if really on screen.
+    if (d.type === 'push-check') { e.ports?.[0]?.postMessage({ onScreen: document.visibilityState === 'visible' && document.hasFocus() && !!state.auth }); return; }
     if (d.type !== 'open' || !state.auth) return;
     if (d.tenantId && isAdmin() && d.tenantId !== state.tenantId && state.tenants.some((t) => t._id === d.tenantId)) await selectTenant(d.tenantId, { silent: true });
     location.hash = (d.url || '/#/overview').replace(/^\/?/, '').replace(/^[^#]*/, '');
