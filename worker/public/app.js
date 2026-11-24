@@ -339,8 +339,7 @@
     try {
       const { unreadChats } = await api('GET', `/chats/${state.tenantId}?limit=1`);
       state.unreadChats = unreadChats;
-      const b = $('#nav-unread');
-      if (b) { b.textContent = unreadChats; b.hidden = !unreadChats; }
+      for (const b of [$('#nav-unread'), ...$$('#tabbar .nav-unread')]) if (b) { b.textContent = unreadChats; b.hidden = !unreadChats; }
       document.title = `${unreadChats ? `(${unreadChats}) ` : ''}Agent Desk · WhatsApp for every business`;
     } catch { /* ignore */ }
   }, 300);
@@ -464,7 +463,7 @@
     activity: { title: 'Activity log', icon: 'activity', render: renderActivity },
   };
   function renderNav() {
-    const link = (p, extra = '') => `<a href="#/${p}" data-page="${p}">${icon(PAGES[p].icon)}<span>${PAGES[p].title}</span>${extra}</a>`;
+    const link = (p, extra = '') => `<a href="#/${p}" data-page="${p}" title="${esc(PAGES[p].title)}">${icon(PAGES[p].icon)}<span>${PAGES[p].title}</span>${extra}</a>`;
     $('#nav').innerHTML = `
       <div class="nav-label">Workspace</div>
       ${link('overview')}${link('inbox', `<span class="badge" id="nav-unread" ${state.unreadChats ? '' : 'hidden'}>${state.unreadChats}</span>`)}${link('leads')}${link('confirmed')}${link('broadcast')}
@@ -473,7 +472,40 @@
       ${isAdmin() ? `<div class="nav-label">Admin</div>${link('clients')}` : ''}
       ${link('activity')}`;
     $$('#nav a').forEach((a) => a.addEventListener('click', () => $('#shell').classList.remove('nav-open')));
+    // Phone: app-style tab bar. "More" opens the full menu as a drawer.
+    const tab = (p, label, extra = '') => `<a href="#/${p}" data-page="${p}">${icon(PAGES[p].icon)}<span>${label}</span>${extra}</a>`;
+    $('#tabbar').innerHTML = `${tab('overview', 'Home')}${tab('inbox', 'Inbox', `<span class="badge nav-unread" ${state.unreadChats ? '' : 'hidden'}>${state.unreadChats}</span>`)}${tab('leads', 'Leads')}${tab('broadcast', 'Broadcast')}
+      <button type="button" id="tab-more">${icon('menu')}<span>More</span></button>`;
+    $('#tab-more').addEventListener('click', () => $('#shell').classList.add('nav-open'));
+    markActiveTab();
   }
+  const TAB_PAGES = ['overview', 'inbox', 'leads', 'broadcast'];
+  function markActiveTab() {
+    const p = state.route?.page;
+    $$('#tabbar a').forEach((a) => a.classList.toggle('active', a.dataset.page === p));
+    $('#tab-more')?.classList.toggle('active', !!p && !TAB_PAGES.includes(p));
+  }
+
+  // Phones show table rows as cards; CSS prints each cell's column name from data-label.
+  function labelTables(root) {
+    for (const table of root.querySelectorAll('table.table:not([data-labelled])')) {
+      const heads = [...table.querySelectorAll('thead th')].map((th) => th.textContent.trim());
+      if (!heads.length) continue;
+      for (const tr of table.querySelectorAll('tbody tr')) [...tr.children].forEach((td, i) => {
+        if (heads[i] && !td.hasAttribute('data-label')) td.setAttribute('data-label', heads[i]);
+        if (i > 0 && /^[—-]?$/.test(td.textContent.trim()) && !td.querySelector('input, button, a, img')) td.classList.add('cell-empty');
+      });
+      table.setAttribute('data-labelled', '');
+    }
+  }
+  new MutationObserver(() => labelTables(document.body)).observe(document.body, { childList: true, subtree: true });
+  // Swipe the menu drawer left to close it; Escape closes it too.
+  (() => {
+    let x0 = null;
+    document.addEventListener('touchstart', (e) => { x0 = $('#shell')?.classList.contains('nav-open') ? e.touches[0].clientX : null; }, { passive: true });
+    document.addEventListener('touchend', (e) => { if (x0 !== null && x0 - e.changedTouches[0].clientX > 60) $('#shell').classList.remove('nav-open'); x0 = null; }, { passive: true });
+    document.addEventListener('keydown', (e) => { if (e.key === 'Escape') $('#shell')?.classList.remove('nav-open'); });
+  })();
 
   let skipNextRoute = false;
   let lastHash = location.hash;
@@ -495,9 +527,13 @@
     const prev = state.route.page;
     state.route = { page: p, arg: arg ? decodeURIComponent(arg) : null };
     $$('#nav a').forEach((a) => a.classList.toggle('active', a.dataset.page === p));
+    markActiveTab();
+    document.body.classList.toggle('in-chat', p === 'inbox' && !!state.route.arg);
+    $('#shell').classList.remove('nav-open');
     $('#page-title').textContent = PAGES[p].title;
     const pageEl = $('#page');
     pageEl.className = `page ${PAGES[p].flush ? 'flush' : ''}`;
+    if (p !== prev) pageEl.scrollTop = 0;
     if (p === 'inbox' && prev === 'inbox' && state.inbox && $('#inbox')) { openChat(state.route.arg); return; }
     if (!state.tenant && !['clients', 'activity'].includes(p)) { pageEl.innerHTML = noTenantHtml(); hydrateIcons(pageEl); return; }
     PAGES[p].render();

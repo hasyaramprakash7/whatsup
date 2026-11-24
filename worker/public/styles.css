@@ -630,3 +630,212 @@ table.table { width: 100%; border-collapse: collapse; font-size: 13.5px; }
 .bc-side { position: sticky; top: 16px; }
 .bc-side .bc-list { max-height: min(420px, 50vh); }
 @media (max-width: 1100px) { .bc-side { position: static; } }
+
+/* =====================================================================
+   Responsive app shell: big screens, tablets (icon sidebar), phones (app)
+   ===================================================================== */
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+body { overscroll-behavior-y: none; }
+a, button, .chat-item, .tpl-card, .filter, label { -webkit-tap-highlight-color: transparent; }
+.page { overscroll-behavior-y: contain; -webkit-overflow-scrolling: touch; }
+.tabbar { display: none; }
+img, video { max-width: 100%; }
+
+/* Wide monitors: use the extra room. */
+@media (min-width: 1600px) {
+  .page-inner { max-width: 1440px; }
+  .page { padding: 28px 32px; }
+}
+@media (min-width: 2200px) {
+  .page-inner { max-width: 1720px; }
+  body { font-size: 15px; }
+}
+
+/* Tablets and small laptops: the sidebar becomes an icon rail so pages get the width. */
+@media (min-width: 861px) and (max-width: 1180px) {
+  .shell { grid-template-columns: 76px minmax(0, 1fr); }
+  .sidebar { padding: 16px 10px; align-items: center; }
+  .sidebar .logo > span:not(.logo-mark), .nav-label, .nav a > span:not(.badge), .me > div, .me .btn { display: none; }
+  .nav { width: 100%; gap: 4px; }
+  .nav a { justify-content: center; padding: 11px 0; position: relative; }
+  .nav a .badge { position: absolute; top: 3px; right: 6px; min-width: 18px; height: 18px; font-size: 10.5px; padding: 0 5px; }
+  .nav a.active { box-shadow: none; background: rgba(16,185,129,.18); }
+  .me { padding: 6px; justify-content: center; background: transparent; }
+  .topbar { padding: 0 18px; }
+  .page { padding: 20px; }
+  .tenant-switch select { min-width: 180px; }
+}
+
+/* Phones and small tablets: a real app layout. */
+@media (max-width: 860px) {
+  :root { --tabbar-h: 60px; }
+
+  /* Top bar: compact, respects the notch / status bar. */
+  .topbar { height: calc(54px + env(safe-area-inset-top)); padding: env(safe-area-inset-top) max(12px, env(safe-area-inset-right)) 0 max(12px, env(safe-area-inset-left)); gap: 6px; position: relative; z-index: 20; }
+  .topbar .menu-btn { display: none; }
+  .topbar h1 { font-size: 17px; font-weight: 700; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; flex: 1 1 auto; }
+  .topbar .spacer { display: none; }
+  .tenant-switch select { width: 132px; min-width: 0; height: 34px; font-size: 13px; padding: 0 8px; }
+  .ai-quick { padding: 4px 8px; }
+  .live { padding: 0 8px; height: 26px; }
+
+  /* Bottom tab bar. */
+  .tabbar { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); flex: none; height: calc(var(--tabbar-h) + env(safe-area-inset-bottom)); padding: 0 env(safe-area-inset-right) env(safe-area-inset-bottom) env(safe-area-inset-left); background: color-mix(in srgb, var(--surface) 92%, transparent); backdrop-filter: saturate(180%) blur(14px); -webkit-backdrop-filter: saturate(180%) blur(14px); border-top: 1px solid var(--border); z-index: 20; user-select: none; -webkit-user-select: none; }
+  .tabbar a, .tabbar button { position: relative; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 3px; border: 0; background: none; font: inherit; font-size: 10.5px; font-weight: 600; color: var(--muted); text-decoration: none; cursor: pointer; padding: 6px 0 4px; min-width: 0; }
+  .tabbar a > span:not(.badge), .tabbar button > span { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 100%; }
+  .tabbar svg { width: 23px; height: 23px; transition: transform .15s; }
+  .tabbar .active { color: var(--brand-strong); }
+  .tabbar .active::before { content: ""; position: absolute; top: 0; left: 30%; right: 30%; height: 3px; border-radius: 0 0 3px 3px; background: var(--brand); }
+  .tabbar a:active svg, .tabbar button:active svg { transform: scale(.9); }
+  .tabbar .badge { position: absolute; top: 4px; left: calc(50% + 6px); min-width: 18px; height: 18px; font-size: 10.5px; padding: 0 5px; border: 2px solid var(--surface); box-sizing: content-box; }
+  body.in-chat .tabbar { display: none; }
+
+  /* The full menu slides in as a drawer from "More". */
+  .sidebar { width: min(300px, 84vw); padding-top: calc(18px + env(safe-area-inset-top)); padding-bottom: calc(14px + env(safe-area-inset-bottom)); transition: transform .25s cubic-bezier(.2,.8,.2,1); }
+  .shell.nav-open::after { animation: fade .2s ease; }
+  .nav a { padding: 12px; font-size: 15px; }
+
+  /* Pages */
+  .page { padding: 14px max(12px, env(safe-area-inset-left)) 20px; }
+  .page-inner { gap: 14px; }
+  .page-head { align-items: stretch; gap: 10px; }
+  .page-head h1 { font-size: 20px; }
+  .page-head p { font-size: 13px; }
+  .page-head > .spacer { display: none; }
+  .page-head > .btn, .page-head > a.btn { flex: 1 1 auto; }
+  .card { border-radius: 16px; }
+  .card-head { padding: 14px 16px; flex-wrap: wrap; row-gap: 8px; }
+  .card-body, .card-pad { padding: 16px; }
+  .list-row { padding: 12px 16px; }
+  .kpi { padding: 14px; }
+  .kpi .value { font-size: 24px; }
+  .filters { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; margin: 0 -4px; padding: 2px 4px; scroll-snap-type: x proximity; }
+  .filters::-webkit-scrollbar { display: none; }
+  .filter { flex: none; height: 34px; scroll-snap-align: start; }
+  .pager { flex-wrap: wrap; padding: 12px; }
+  .stat-chips { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+
+  /* Finger-sized controls; 16px text stops iPhones zooming into inputs. */
+  .btn { height: 42px; border-radius: 12px; }
+  .btn.sm { height: 36px; border-radius: 10px; }
+  .btn.icon { width: 42px; }
+  .btn.icon.sm { width: 36px; }
+  .topbar .btn.icon { width: 38px; height: 38px; }
+  .input, select, textarea { font-size: 16px; height: 44px; border-radius: 12px; }
+  textarea { height: auto; }
+  input[type=checkbox], input[type=radio] { width: 20px; height: 20px; }
+
+  /* Tables turn into cards: one card per row, each value labelled. */
+  .table-wrap { overflow: visible; }
+  table.table thead { display: none; }
+  table.table, table.table tbody, table.table tr, table.table td { display: block; width: 100%; }
+  table.table tbody { display: grid; gap: 10px; padding: 10px; }
+  table.table tr { border: 1px solid var(--border); border-radius: 14px; background: var(--surface); padding: 6px 14px; box-shadow: var(--shadow-sm); }
+  table.table tbody tr:hover { background: var(--surface); }
+  table.table td { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 8px 0; border-bottom: 1px dashed var(--border); text-align: right; min-width: 0; overflow-wrap: anywhere; }
+  table.table td::before { content: attr(data-label); flex: none; max-width: 45%; color: var(--muted); font-size: 12px; font-weight: 600; text-align: left; }
+  table.table td:first-child { justify-content: flex-start; text-align: left; padding: 8px 0 10px; }
+  table.table td:first-child::before, table.table td[data-label=""]::before, table.table td:not([data-label])::before { display: none; }
+  table.table td:last-child { border-bottom: 0; }
+  table.table td:empty { display: none; }
+  table.table td[data-label=""]:last-child .btn { flex: 1; }
+  .person { min-width: 0; }
+  .conf-details { justify-content: flex-end; }
+
+  /* The Broadcast picker stays a compact checklist. */
+  .bc-list table.table { display: table; }
+  .bc-list table.table thead { display: table-header-group; }
+  .bc-list table.table tbody { display: table-row-group; padding: 0; }
+  .bc-list table.table tr { display: table-row; border: 0; border-radius: 0; padding: 0; box-shadow: none; }
+  .bc-list table.table td { display: table-cell; width: auto; text-align: left; border-bottom: 1px solid var(--border); padding: 10px; }
+  .bc-list table.table td:first-child { width: 44px; }
+  .bc-list table.table td::before { display: none; }
+  .bc-list, .bc-side .bc-list { max-height: 55vh; }
+
+  /* Inbox: full-screen chat like WhatsApp. */
+  .chat-list-head { padding: 12px; }
+  .chat-item { padding: 12px; }
+  .conv-head { height: 58px; padding: 0 8px; gap: 8px; }
+  .composer { padding: 8px max(10px, env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(10px, env(safe-area-inset-left)); }
+  .inbox .details { position: fixed; inset: 0; z-index: 45; width: 100%; padding-top: env(safe-area-inset-top); padding-bottom: env(safe-area-inset-bottom); }
+
+  /* Popups slide up from the bottom like an app sheet. */
+  .modal-backdrop { place-items: end center; padding: 0; }
+  .modal { max-width: 100%; max-height: 92dvh; border-radius: 20px 20px 0 0; animation: sheet .25s cubic-bezier(.2,.8,.2,1); padding-bottom: env(safe-area-inset-bottom); }
+  .modal::before { content: ""; display: block; width: 40px; height: 5px; border-radius: 3px; background: var(--border-strong); margin: 8px auto 0; }
+  .modal-foot { border-radius: 0; position: sticky; bottom: 0; flex-wrap: wrap; }
+  .modal-foot .btn { flex: 1 1 auto; }
+
+  /* Toasts appear at the top, under the status bar. */
+  .toasts { top: calc(8px + env(safe-area-inset-top)); bottom: auto; left: 50%; right: auto; transform: translateX(-50%); width: calc(100vw - 24px); }
+
+  /* Flow Builder, catalog and other grids. */
+  .studio { gap: 14px; }
+  .phone-screen { height: 480px; }
+  .catalog-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 12px; }
+  .templates-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
+  .item-map { height: 220px; }
+  .console { max-height: 70dvh; }
+}
+@keyframes sheet { from { transform: translateY(100%); } to { transform: none; } }
+
+/* Small phones (most Android phones, iPhone mini/SE). */
+@media (max-width: 420px) {
+  .topbar h1 { font-size: 16px; }
+  .tenant-switch select { width: 104px; }
+  .ai-quick .lbl { display: none; }
+  .live { width: 26px; padding: 0; justify-content: center; }
+  .catalog-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .cat-body { padding: 10px 10px 2px; }
+  .cat-tools { padding: 6px 8px 8px; }
+  .kpi .label { font-size: 12px; }
+  .funnel-row { grid-template-columns: 84px minmax(0, 1fr) 50px; gap: 8px; }
+  .msg { max-width: 92%; }
+}
+/* Very narrow phones (320 to 360px). */
+@media (max-width: 360px) {
+  .tenant-switch { display: none; }
+  .tabbar a > span:not(.badge), .tabbar button > span { font-size: 10px; }
+  .catalog-grid { grid-template-columns: minmax(0, 1fr); }
+  .kpis { grid-template-columns: minmax(0, 1fr); }
+}
+/* Phone turned sideways: keep the chat and tab bar usable. */
+@media (max-width: 960px) and (max-height: 500px) and (orientation: landscape) {
+  :root { --tabbar-h: 48px; }
+  .tabbar a, .tabbar button { flex-direction: row; gap: 6px; font-size: 12px; }
+  .tabbar svg { width: 20px; height: 20px; }
+  .topbar { height: calc(46px + env(safe-area-inset-top)); }
+}
+/* Touch screens: no hover lift, instant feedback on press. */
+@media (hover: none) {
+  .tpl-card:hover { transform: none; }
+  .btn:active, .filter:active, .chat-item:active, .tpl-card:active { transform: scale(.98); transition: transform .06s; }
+}
+/* Installed app (opened from the home screen). */
+@media (display-mode: standalone) {
+  body { user-select: none; -webkit-user-select: none; }
+  input, textarea, [contenteditable], .msg, .bubble, code, .kv dd, td { user-select: text; -webkit-user-select: text; }
+}
+@media (max-width: 860px) {
+  table.table td.cell-empty { display: none; }
+  .kpis > :last-child:nth-child(odd) { grid-column: 1 / -1; }
+  body.in-chat .topbar { display: none; }
+  body.in-chat .conv-head { height: calc(58px + env(safe-area-inset-top)); padding-top: env(safe-area-inset-top); }
+}
+@media (max-width: 860px) {
+  .card-head > div:not(.row):not(.spacer) { flex: 1 1 180px; min-width: 0; }
+  #bc-manual-form .row > .field:first-child { flex: 1 1 100%; }
+  #bc-manual-form .row > .field:nth-child(2) { flex: 1 1 0; min-width: 0; }
+}
+/* One column (tablets/phones): the Send list sits right under Add contacts. */
+@media (max-width: 1024px) {
+  .bc-grid > .stack { display: contents; }
+  .bc-grid > .stack > * { order: 5; }
+  .bc-grid > .stack:first-child > :first-child { order: 1; }
+  .bc-grid > .bc-side > :first-child { order: 2; }
+}
+/* Tablets in portrait: lead/booking cards two per row. */
+@media (min-width: 600px) and (max-width: 860px) {
+  table.table tbody { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); align-items: start; }
+  .bc-list table.table tbody { display: table-row-group; }
+}
