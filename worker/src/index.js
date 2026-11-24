@@ -16,7 +16,7 @@ import { aiDecide } from './lib/ai.js';
 import { MEDIA_FILE } from './lib/media.js';
 import { ITEM_FIELDS, cleanDetails, resolveMapPoint } from './lib/itemfields.js';
 import { geocode, reverseGeocode } from './lib/geo.js';
-import { pushConfigured, saveSubscription, deleteSubscription, getSubscription, sendPush, NOTIFY_KINDS, testPushPayload } from './lib/push.js';
+import { pushConfigured, saveSubscription, deleteSubscription, getSubscription, sendPush, NOTIFY_KINDS, testPushPayload, markSent, recordAck, deliveryHealth } from './lib/push.js';
 import { takeAiReply, layoutOf, listCatalog, getItem, insertItem, updateItem, deleteItem, MAX_CATALOG_ITEMS } from './lib/db.js';
 
 export { ConversationDO, BusinessHub };
@@ -113,6 +113,16 @@ app.post('/push/renew', async (c) => {
   if (s.endpoint !== old.endpoint) await deleteSubscription(c.env, old.endpoint);
   console.log('[Push] a device renewed its notification address');
   return c.json({ success: true });
+});
+
+/** The phone's background script: "this alert just arrived" (lets us tell, per phone, whether alerts get through when the app is closed). */
+app.post('/push/ack', async (c) => {
+  if (await limited(c.env.API_LIMIT, `ack:${clientIp(c)}`)) return fail(c, 429, 'Too many requests.');
+  const b = await c.req.json().catch(() => ({}));
+  const sentAt = Number(b.sentAt); const now = Date.now();
+  if (typeof b.endpoint !== 'string' || b.endpoint.length > 1000 || !Number.isFinite(sentAt) || sentAt > now + 5000 || sentAt < now - 26 * 3600e3) return fail(c, 400, 'Invalid request.');
+  const ok = await recordAck(c.env, b.endpoint, { sentAt, awake: b.awake === true, test: b.test === true });
+  return ok ? c.json({ success: true }) : fail(c, 404, 'Unknown device.');
 });
 
 app.get('/webhook', async (c) => {
@@ -227,7 +237,7 @@ app.post('/api/push/status', async (c) => {
   const b = await c.req.json().catch(() => ({}));
   const sub = b.endpoint ? await getSubscription(c.env, String(b.endpoint)) : null;
   if (!sub || sub.scope !== pushScope(c.get('auth'))) return c.json({ success: true, subscribed: false });
-  return c.json({ success: true, subscribed: true, prefs: cleanPrefs(sub.prefs) });
+  return c.json({ success: true, subscribed: true, prefs: cleanPrefs(sub.prefs), health: deliveryHealth(sub) });
 });
 
 app.post('/api/push/unsubscribe', async (c) => {
@@ -249,11 +259,12 @@ app.post('/api/push/test', async (c) => {
     await c.env.HUB.get(c.env.HUB.idFromName(`pushtest:${await sha256Hex(sub.endpoint)}`)).scheduleTestPush(sub.endpoint, delay * 1000);
     return c.json({ success: true, scheduled: true, delay });
   }
-  let r;
-  try { r = await sendPush(c.env, sub, testPushPayload(false), { urgency: 'high' }); } // same path as a real customer message
+  let r; const payload = testPushPayload(false);
+  try { r = await sendPush(c.env, sub, payload, { urgency: 'high' }); } // same path as a real customer message
   catch (err) { return fail(c, 502, `Could not reach the notification service: ${err.message}`); }
   if (r.gone) { await deleteSubscription(c.env, sub.endpoint); return fail(c, 410, 'This device turned notifications off. Turn them on again.'); }
   if (!r.ok) return fail(c, 502, `The notification service refused it (${r.status}).`);
+  await markSent(c.env, sub.endpoint, payload.at);
   return c.json({ success: true });
 });
 app.get('/api/templates', (c) => c.json({ success: true, data: TEMPLATES }));

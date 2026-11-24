@@ -20,17 +20,30 @@ self.addEventListener('fetch', (e) => {
   )));
 });
 
-/** True only if an open dashboard page answers (within 600 ms) that this exact chat is open on screen right now. */
-async function chatOnScreen(phone) {
+/**
+ * Asks open dashboard pages (600 ms max): is the app on screen (awake), and is this exact chat open (onScreen)?
+ * Phones keep backgrounded apps "visible" but frozen; a frozen page can't answer, so it counts as closed.
+ */
+async function askPages(phone) {
   const wins = (await self.clients.matchAll({ type: 'window', includeUncontrolled: true })).filter((w) => w.visibilityState === 'visible');
-  if (!wins.length) return false;
+  if (!wins.length) return { awake: false, onScreen: false };
   const answers = await Promise.all(wins.map((w) => new Promise((resolve) => {
     const ch = new MessageChannel();
-    const timer = setTimeout(() => resolve(false), 600);
-    ch.port1.onmessage = (ev) => { clearTimeout(timer); resolve(!!(ev.data && ev.data.onScreen)); };
-    try { w.postMessage({ type: 'push-check', phone }, [ch.port2]); } catch { clearTimeout(timer); resolve(false); }
+    const timer = setTimeout(() => resolve(null), 600);
+    ch.port1.onmessage = (ev) => { clearTimeout(timer); resolve(ev.data || null); };
+    try { w.postMessage({ type: 'push-check', phone }, [ch.port2]); } catch { clearTimeout(timer); resolve(null); }
   })));
-  return answers.some(Boolean);
+  return { awake: answers.some((a) => a && a.awake), onScreen: answers.some((a) => a && a.onScreen) };
+}
+
+/** Tells the server this alert arrived (and whether the app was open), so it can tell if this phone holds alerts back. */
+async function reportArrival(d, awake) {
+  try {
+    if (!d.at || d.kind === 'broadcast') return;
+    const sub = await self.registration.pushManager.getSubscription();
+    if (!sub) return;
+    await fetch('/push/ack', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ endpoint: sub.endpoint, sentAt: d.at, awake: !!awake, test: !!d.test }) });
+  } catch { /* best effort */ }
 }
 
 self.addEventListener('push', (e) => {
@@ -38,11 +51,11 @@ self.addEventListener('push', (e) => {
   try { d = e.data ? e.data.json() : {}; } catch { d = { title: 'Bluxury WhatsApp AI', body: e.data ? e.data.text() : '' }; }
   e.waitUntil((async () => {
     // Like WhatsApp: every message notifies, except the chat you are reading right now.
-    // Phones keep backgrounded apps "visible" but frozen, so ask the page itself: a frozen page can't answer → notify.
-    try {
-      const phone = (String(d.url || '').match(/#\/inbox\/(\d+)/) || [])[1];
-      if (d.kind === 'message' && phone && !isApple && await chatOnScreen(phone)) return;
-    } catch { /* when unsure, notify */ }
+    const phone = (String(d.url || '').match(/#\/inbox\/(\d+)/) || [])[1];
+    let pages = { awake: false, onScreen: false };
+    try { pages = await askPages(phone); } catch { /* when unsure, notify */ }
+    const ack = reportArrival(d, pages.awake);
+    if (d.kind === 'message' && phone && !isApple && pages.onScreen) { await ack; return; }
     try { if (d.kind === 'message' && self.navigator.setAppBadge) { const p = self.navigator.setAppBadge(); if (p && p.catch) p.catch(() => {}); } } catch { /* badge is optional */ }
     await self.registration.showNotification(d.title || 'Bluxury WhatsApp AI', {
       body: d.body || '',
@@ -55,6 +68,7 @@ self.addEventListener('push', (e) => {
       vibrate: [120, 60, 120],
       data: { url: d.url || '/#/overview', kind: d.kind, tenantId: d.tenantId },
     });
+    await ack;
   })());
 });
 

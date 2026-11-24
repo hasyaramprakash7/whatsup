@@ -94,7 +94,7 @@ export async function sendPush(env, sub, payload, { ttl = 86400, urgency = 'high
 export const testPushPayload = (closed) => ({
   kind: 'message', title: 'Bluxury WhatsApp AI',
   body: closed ? 'It works! Alerts reach this phone even when the app is closed.' : 'Test message: customer messages will appear like this, at the top of your screen.',
-  url: '/#/inbox/0', tag: 'test', at: Date.now(),
+  url: '/#/inbox/0', tag: 'test', at: Date.now(), ...(closed ? { test: true } : {}),
 });
 
 // ---------- subscriptions (D1) ----------
@@ -104,7 +104,12 @@ const ensureTable = (env) => (tableReady ||= env.DB.batch([
   env.DB.prepare(`CREATE TABLE IF NOT EXISTS push_subscriptions (endpoint TEXT PRIMARY KEY, scope TEXT NOT NULL, p256dh TEXT NOT NULL, auth TEXT NOT NULL,
     prefs TEXT NOT NULL DEFAULT '{}', user_agent TEXT, created_at TEXT NOT NULL, updated_at TEXT NOT NULL, fail_count INTEGER NOT NULL DEFAULT 0)`),
   env.DB.prepare('CREATE INDEX IF NOT EXISTS push_subscriptions_scope ON push_subscriptions (scope)'),
-]).catch((err) => { tableReady = null; throw err; }));
+]).then(async () => {
+  // Delivery tracking (migrations/0008_push_health.sql); added here too so it works before the migration runs.
+  for (const col of ['pending_at INTEGER', 'ack_at INTEGER', "health TEXT", 'health_delay_ms INTEGER', 'health_at INTEGER', 'slow_count INTEGER NOT NULL DEFAULT 0']) {
+    await env.DB.prepare(`ALTER TABLE push_subscriptions ADD COLUMN ${col}`).run().catch(() => {}); // already there
+  }
+}).catch((err) => { tableReady = null; throw err; }));
 const parsePrefs = (s) => { try { return { ...JSON.parse(s || '{}') }; } catch { return {}; } };
 
 export async function saveSubscription(env, { scope, endpoint, p256dh, auth, prefs, userAgent }) {
@@ -121,6 +126,50 @@ export async function getSubscription(env, endpoint) {
   await ensureTable(env);
   const row = await env.DB.prepare('SELECT * FROM push_subscriptions WHERE endpoint = ?').bind(endpoint).first();
   return row ? { ...row, prefs: parsePrefs(row.prefs) } : null;
+}
+
+// ---------- delivery health: did alerts really reach this phone while the app was closed? ----------
+// Every alert carries its send time; the phone's background script reports back the moment it arrives.
+// A phone that blocks the app in the background gets them only when the app is opened → arrives minutes late.
+export const SLOW_MS = 90 * 1000;
+const outstanding = (r) => r.pending_at != null; // cleared when that alert (or a newer one) arrives
+
+/** Remembers the oldest alert this device hasn't confirmed yet. */
+export async function markSent(env, endpoint, at) {
+  await env.DB.prepare('UPDATE push_subscriptions SET pending_at = ? WHERE endpoint = ? AND pending_at IS NULL')
+    .bind(at, endpoint).run().catch(() => {});
+}
+
+/** The phone confirmed an alert arrived. awake = the app was open on screen at that moment. */
+export async function recordAck(env, endpoint, { sentAt, awake, test }) {
+  await ensureTable(env);
+  const row = await getSubscription(env, endpoint);
+  if (!row) return false;
+  const now = Date.now();
+  const resolves = outstanding(row) && sentAt >= row.pending_at - 1000;
+  const wait = Math.max(0, now - (resolves ? row.pending_at : sentAt));
+  const sets = []; const vals = [];
+  if (resolves) { sets.push('ack_at = ?', 'pending_at = NULL'); vals.push(now); }
+  if (wait > SLOW_MS) {
+    // Held back. Two separate times (or once in the closed-app test) = this phone blocks alerts, not just a moment offline.
+    sets.push("health = 'slow'", 'health_delay_ms = ?', 'health_at = ?', test ? 'slow_count = MAX(slow_count + 1, 2)' : (resolves ? 'slow_count = slow_count + 1' : 'slow_count = slow_count'));
+    vals.push(wait, now);
+  } else if (!awake) {
+    // Arrived on time with the app closed: proof this phone works.
+    sets.push("health = 'ok'", 'health_delay_ms = ?', 'health_at = ?', 'slow_count = 0');
+    vals.push(wait, now);
+  }
+  if (sets.length) await env.DB.prepare(`UPDATE push_subscriptions SET ${sets.join(', ')} WHERE endpoint = ?`).bind(...vals, endpoint).run();
+  return true;
+}
+
+/** ok | late (once) | blocked (repeatedly late) | waiting (an alert hasn't arrived yet) | unknown (nothing to judge yet) */
+export function deliveryHealth(row, now = Date.now()) {
+  if (!row) return { state: 'unknown' };
+  if (outstanding(row) && now - row.pending_at > SLOW_MS) return { state: 'waiting', delayMs: now - row.pending_at, at: row.pending_at };
+  if (row.health === 'slow') return { state: row.slow_count >= 2 ? 'blocked' : 'late', delayMs: row.health_delay_ms, at: row.health_at };
+  if (row.health === 'ok') return { state: 'ok', delayMs: row.health_delay_ms, at: row.health_at };
+  return { state: 'unknown' };
 }
 
 /**
@@ -140,7 +189,7 @@ export async function notifyTenant(env, tenantId, kind, { title, body, url, tag,
       const payload = { kind, title: forAdmin ? `${title} · ${businessName}` : title, body, url, tag: tag || kind, tenantId: String(tenantId), at: Date.now() };
       try {
         const r = await sendPush(env, s, payload, { urgency: kind === 'broadcast' ? 'normal' : 'high' }); // no Topic: Android drops collapsed ones; the tag already replaces old ones on the phone
-        if (r.ok) { sent++; console.log(`[Push] ${kind} delivered to a device`); return; }
+        if (r.ok) { sent++; console.log(`[Push] ${kind} delivered to a device`); if (kind !== 'broadcast') await markSent(env, s.endpoint, payload.at); return; }
         if (r.gone) { console.log('[Push] a device turned notifications off; removed'); await deleteSubscription(env, s.endpoint); }
         else {
           console.warn(`[Push] ${r.status} ${r.error}`);

@@ -376,10 +376,41 @@
       Object.assign(p, { on: true, endpoint: sub.endpoint, prefs: res.prefs });
     } catch { p.on = false; }
     paintPushState();
+    if (p.on) checkDelivery();
   }
-  // Coming back to the app (at most every 10 minutes): re-check the connection.
+
+  // ---- Is this phone really getting alerts with the app closed? (measured by the server from real alerts) ----
+  const PUSH_TEST_KEY = 'bluxury_push_test_at';
+  const mins = (ms) => (ms >= 3600e3 ? `${Math.round(ms / 3600e3)} h` : ms >= 60e3 ? `${Math.round(ms / 60e3)} min` : `${Math.max(1, Math.round(ms / 1000))} s`);
+  async function fetchHealth() {
+    if (!state.push.on || !state.push.endpoint) return null;
+    try { state.push.health = (await api('POST', '/push/status', { endpoint: state.push.endpoint })).health || { state: 'unknown' }; } catch { /* keep last */ }
+    return state.push.health;
+  }
+  /** On open / return: if this phone held alerts back, say so once a day and show its exact fix. */
+  async function checkDelivery({ afterTest } = {}) {
+    let h = await fetchHealth(); if (!h) return;
+    // Alerts that waited while the app was closed usually arrive right now, as the app opens: give them a moment.
+    if (h.state === 'waiting') { await new Promise((r) => setTimeout(r, 8000)); h = (await fetchHealth()) || h; }
+    if (!state.push.device) state.push.device = await detectDevice();
+    const phoneName = DEVICES[state.push.device] || 'phone';
+    if (afterTest) {
+      if (h.state === 'ok' && h.at >= afterTest) toast('✓ Alerts work on this phone', 'The test arrived with the app closed. You’re all set — nothing more to do.', { timeout: 9000 });
+      else toast('Your phone held back the test alert', `Your ${phoneName} is stopping alerts while the app is closed. Tap for the 2-minute fix.`, { kind: 'error', timeout: 20000, onClick: openNotifySheet });
+      return;
+    }
+    if (!['blocked', 'late', 'waiting'].includes(h.state)) return;
+    const today = new Date().toDateString(); if (store.get('bluxury_push_warned') === today) return;
+    store.set('bluxury_push_warned', today);
+    if (h.state === 'late') toast('An alert reached this phone late', `It arrived ${mins(h.delayMs)} after it was sent. If the phone had internet, tap to check its settings.`, { kind: 'warn', timeout: 15000, onClick: openNotifySheet });
+    else toast('Alerts only arrive when you open the app', `Your ${phoneName} is holding them back while the app is closed. Tap for the 2-minute fix.`, { kind: 'error', timeout: 20000, onClick: openNotifySheet });
+  }
+  // Coming back to the app: finish a closed-app test, and re-check the connection (at most every 10 minutes).
   document.addEventListener('visibilitychange', () => {
-    if (document.visibilityState === 'visible' && state.auth && state.push.key && Date.now() - pushSyncAt > 10 * 60e3) syncPush();
+    if (document.visibilityState !== 'visible' || !state.auth || !state.push.key) return;
+    const t = Number(store.get(PUSH_TEST_KEY) || 0);
+    if (t && Date.now() - t > 35e3) { store.set(PUSH_TEST_KEY, ''); if (Date.now() - t < 6 * 3600e3) { setTimeout(() => checkDelivery({ afterTest: t }), 2500); return; } }
+    if (Date.now() - pushSyncAt > 10 * 60e3) syncPush();
   });
   async function pushEnable() {
     if (appleDevice() && !isInstalled()) throw new Error('On iPhone and iPad, install the app first (Share → Add to Home Screen), open it from your home screen, then turn notifications on.');
@@ -440,7 +471,7 @@
     return guessDevice(model);
   }
   const iosVersion = () => { const m = navigator.userAgent.match(/OS (\d+)_(\d+)/); return m ? Number(m[1]) + Number(m[2]) / 100 : null; };
-  function deviceGuide(dev) {
+  function deviceGuide(dev, collapsed = false) {
     const demo = `<div class="demo"><img src="/icon-192.png" alt="" /><div><b>Ravi Kumar</b><span>Hi, is the 2BHK still available?</span></div></div>`;
     const popup = (alert = 'Default / Alerting', pop = 'Pop on screen') => `<li><b>Pop at the top:</b> tap <b>Send a test notification</b>, pull down the notification bar, <b>long-press</b> the Bluxury notification → <b>⚙ Settings</b> → choose <b>${alert}</b> (not Silent) and turn on <b>${pop}</b>, <b>Lock screen</b> and <b>Sound</b>.</li>`;
     const lock = '<li><b>Keep it from being closed:</b> open recent apps, long-press (or swipe down on) the <b>Chrome</b> card → tap the <b>🔒 lock</b>. Don’t use “Clear all”, cleaner or booster apps on Chrome.</li>';
@@ -492,15 +523,27 @@
           <li>Alerts arrive while the browser is running — even with this tab closed. <b>Chrome / Edge:</b> Settings → System → turn on <b>Continue running background apps when closed</b>.</li>
           <li><b>Windows:</b> Settings → System → Notifications → turn on <b>Chrome / Edge</b>, and turn off <b>Do not disturb</b>. <b>Mac:</b> System Settings → Notifications → your browser → <b>Allow</b>, style <b>Alerts</b>.</li></ol>`,
     };
-    return `<div class="popup-help device-guide">
-        <strong class="t">${icon('bell')}Always get alerts — even when the app is closed</strong>
-        <label class="small muted" style="display:flex;align-items:center;gap:8px;margin:2px 0 8px">Your device
-          <select id="dev-pick" class="input" style="flex:1;min-height:36px">${Object.entries(DEVICES).map(([k, v]) => `<option value="${k}" ${k === dev ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
-        <span class="small">Do this once on each phone:</span>
+    const body = `
+        <p class="small muted" style="margin:0 0 6px">Detected: <b>${DEVICES[dev]}</b> · <a href="#" id="dev-change">Not this phone?</a></p>
+        <select id="dev-pick" class="input" style="min-height:36px;margin-bottom:8px" hidden>${Object.entries(DEVICES).map(([k, v]) => `<option value="${k}" ${k === dev ? 'selected' : ''}>${v}</option>`).join('')}</select>
+        <span class="small">Do this once on this phone — it stays set:</span>
         ${steps[dev] || steps.stock}
         ${!['iphone', 'computer'].includes(dev) ? chromeNote : ''}
-        ${dev !== 'computer' ? demo : ''}
-      </div>`;
+        ${dev !== 'computer' ? demo : ''}`;
+    // Working already → keep the steps folded away.
+    if (collapsed) return `<details class="popup-help device-guide"><summary><strong>Setup steps for your ${DEVICES[dev]}</strong></summary>${body}</details>`;
+    return `<div class="popup-help device-guide"><strong class="t">${icon('bell')}Fix it on your ${DEVICES[dev]}</strong>${body}</div>`;
+  }
+  /** What the server measured for this device, in plain words. */
+  function healthBanner(h, dev) {
+    const name = DEVICES[dev] || 'phone';
+    switch (h?.state) {
+      case 'ok': return `<div class="banner green">${icon('check')}<div><strong>Working on this phone.</strong> The last alert with the app closed arrived in ${mins(h.delayMs || 0)}. Nothing to set up.</div></div>`;
+      case 'blocked': return `<div class="banner red">${icon('alert')}<div><strong>Your ${esc(name)} is holding alerts back.</strong> They only arrive when you open the app (the last one was ${mins(h.delayMs)} late). Do the steps below once, then tap <b>Test with the app closed</b>.</div></div>`;
+      case 'late': return `<div class="banner amber">${icon('alert')}<div><strong>The last alert arrived ${mins(h.delayMs)} late.</strong> If the phone had internet then, your ${esc(name)} is holding alerts back — do the steps below once.</div></div>`;
+      case 'waiting': return `<div class="banner amber">${icon('alert')}<div><strong>An alert sent ${mins(h.delayMs)} ago hasn’t reached this phone yet.</strong> Your ${esc(name)} may be blocking alerts while the app is closed — do the steps below once.</div></div>`;
+      default: return `<div class="banner blue">${icon('info')}<div><strong>Not checked on this phone yet.</strong> Tap <b>Test with the app closed</b> — the app will tell you if this phone needs any setting changed.</div></div>`;
+    }
   }
   function openNotifySheet() {
     $('#shell').classList.remove('nav-open');
@@ -526,7 +569,8 @@
           </div>
           ${p.on ? `<div class="row wrap" style="gap:8px"><button class="btn" id="push-test">${icon('send')}Send a test notification</button><button class="btn primary" id="push-test-closed">${icon('bell')}Test with the app closed</button></div>
           <div id="push-closed-help"></div>` : ''}
-          <div id="dev-guide">${deviceGuide(state.push.device || guessDevice())}</div>
+          ${p.on ? `<div id="push-health">${healthBanner(p.health, p.device || guessDevice())}</div>` : ''}
+          <div id="dev-guide"></div>
           <p class="hint">Each phone or computer is turned on separately. ${isAdmin() ? 'As admin you get notifications for every business.' : ''}</p>
         </div>`;
       hydrateIcons(el);
@@ -546,16 +590,20 @@
       }));
       const paintGuide = (dev) => {
         state.push.device = dev; const g = el.querySelector('#dev-guide'); if (!g) return;
-        g.innerHTML = deviceGuide(dev); hydrateIcons(g);
+        const hb = el.querySelector('#push-health'); if (hb) { hb.innerHTML = healthBanner(state.push.health, dev); hydrateIcons(hb); }
+        g.innerHTML = deviceGuide(dev, state.push.on && state.push.health?.state === 'ok'); hydrateIcons(g);
+        g.querySelector('#dev-change')?.addEventListener('click', (ev) => { ev.preventDefault(); g.querySelector('#dev-pick').hidden = false; ev.target.closest('p').hidden = true; });
         g.querySelector('#dev-pick')?.addEventListener('change', (ev) => { store.set(PUSH_DEVICE_KEY, ev.target.value); paintGuide(ev.target.value); });
       };
       paintGuide(state.push.device || guessDevice());
-      if (!state.push.device) detectDevice().then((d) => { if (d !== state.push.device) paintGuide(d); });
+      if (!state.push.device) detectDevice().then((d) => paintGuide(d));
+      if (state.push.on) fetchHealth().then(() => paintGuide(state.push.device || guessDevice()));
       el.querySelector('#push-test-closed')?.addEventListener('click', async (e) => {
         const b = e.currentTarget; b.disabled = true;
         try {
           await api('POST', '/push/test', { endpoint: state.push.endpoint, delay: 30 });
-          el.querySelector('#push-closed-help').innerHTML = `<div class="banner green">${icon('check')}<div><strong>Now close the app completely</strong> (swipe it away from recent apps) and <strong>lock the phone</strong>. In about 30 seconds a test alert should pop up at the top.<br>If it doesn’t arrive, follow the steps for your phone below and try again.</div></div>`;
+          store.set(PUSH_TEST_KEY, String(Date.now()));
+          el.querySelector('#push-closed-help').innerHTML = `<div class="banner green">${icon('check')}<div><strong>Now close the app completely</strong> (swipe it away from recent apps) and <strong>lock the phone</strong>. Wait about a minute, then open the app again — it will tell you whether this phone works or what to change.</div></div>`;
           hydrateIcons(el.querySelector('#push-closed-help'));
         } catch (x) { err(x.message); } finally { setTimeout(() => { b.disabled = false; }, 30000); }
       });
@@ -576,7 +624,7 @@
   navigator.serviceWorker?.addEventListener('message', async (e) => {
     const d = e.data || {};
     // Background script asks before skipping a message notification: answer only if really on screen.
-    if (d.type === 'push-check') { e.ports?.[0]?.postMessage({ onScreen: document.visibilityState === 'visible' && document.hasFocus() && !!state.auth && state.route.page === 'inbox' && state.inbox?.active === d.phone }); return; }
+    if (d.type === 'push-check') { e.ports?.[0]?.postMessage({ awake: document.visibilityState === 'visible', onScreen: document.visibilityState === 'visible' && document.hasFocus() && !!state.auth && state.route.page === 'inbox' && state.inbox?.active === d.phone }); return; }
     if (d.type !== 'open' || !state.auth) return;
     if (d.tenantId && isAdmin() && d.tenantId !== state.tenantId && state.tenants.some((t) => t._id === d.tenantId)) await selectTenant(d.tenantId, { silent: true });
     location.hash = (d.url || '/#/overview').replace(/^\/?/, '').replace(/^[^#]*/, '');
@@ -2527,5 +2575,5 @@
   });
   setInterval(() => { if (state.route.page === 'inbox' && state.inbox?.lead && !$('#reply-text')?.value) renderComposer(); }, 60e3);
   if (getKey()) startSession(); else showLogin();
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js?v=6', { updateViaCache: 'none' }).then((r) => r.update()).catch(() => {});
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js?v=7', { updateViaCache: 'none' }).then((r) => r.update()).catch(() => {});
 })();
