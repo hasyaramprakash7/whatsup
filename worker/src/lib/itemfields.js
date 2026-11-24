@@ -48,6 +48,12 @@ export const ITEM_FIELDS = {
     txt('material', 'Material', 'Cotton'),
     sel('stock', 'Stock', ['In stock', 'Few left', 'Out of stock']),
   ],
+  software: [
+    txt('duration', 'Delivery time', '8–12 weeks'),
+    sel('engagement', 'Engagement', ['Fixed scope', 'Dedicated team', 'Fixed scope or dedicated team']),
+    txt('stack', 'Tech stack', 'React, Node.js, Cloudflare'),
+    txt('includes', 'Includes', 'UI/UX, deployment, 30 days support'),
+  ],
   general: [
     txt('duration', 'Duration / delivery', '2 weeks'),
     sel('availability', 'Availability', ['Available', 'Limited', 'Not available']),

@@ -40,7 +40,7 @@ function businessFacts(tenant) {
   return lines.join('\n');
 }
 
-function systemPrompt(tenant, aiCfg, pending, catalog, customerPlace = null) {
+function systemPrompt(tenant, aiCfg, pending, catalog, customerPlace = null, offset = '+05:30') {
   const name = tenant.profile?.displayName || tenant.businessName;
   const items = catalogFacts(catalog);
   return [
@@ -57,19 +57,34 @@ function systemPrompt(tenant, aiCfg, pending, catalog, customerPlace = null) {
     '- If the answer is not in the information, or the customer asks for a person, a call, a complaint or anything sensitive, use action "handoff" and say a team member will contact them.',
     '- Reply in the same language the customer writes in. Keep replies short: 1–3 sentences, plain WhatsApp text (you may use *bold*).',
     '- Never ask for payment details, passwords or ID numbers.',
+    tenant.industry === 'software' ? '- Never write prices, budgets or amounts. If they ask about cost, say every project gets its own quotation and ask for their budget and the options they need; our team will send an exact quotation by email or call.' : '',
     '- Never write a web link unless it appears exactly in the business information above. Never make up links (no example.com or placeholders).',
     '- Do not point to the brochure instead of answering. If the answer is not in the information, use "handoff". If the customer asks for the brochure, set "send_document": true with a short reply.',
     aiCfg.instructions ? `- Extra instructions from the business: ${aiCfg.instructions}` : '',
     '',
     pending
       ? `CURRENT STEP: the customer was asked: "${pending.question}"\nThe valid options are:\n${pending.options.map((o) => `- ${o.id}: ${o.title}`).join('\n')}\n`
+        + `Today is ${todayLabel(offset)}. `
         + 'If the customer\'s message clearly picks one of these options (in any wording or language), use action "select" with that option_id and a short acknowledgement as reply. '
+        + (pending.slots ? 'These options are appointment times. Only select one if its day AND time match what the customer asked for. If they ask for a day or time that is not in the list (for example "today 10 am" when the options say "Tomorrow, 10 AM"), do NOT select: use action "answer", say that time is not available to book here, and ask them to pick one of the listed times or say our team will call to arrange their preferred time. ' : '')
         + 'If they ask a question instead, use action "answer" (the original question will be repeated to them after your reply, so do not repeat the options).'
+        + (pending.slots ? `
+These are the ONLY available times. Today is ${pending.today}. Use "select" only when BOTH the day and the time the customer asked for match that option exactly (e.g. "tomorrow 4pm"). If they ask for a day or time that is not in the list (for example today, or a time not shown), use action "answer": say politely that this time is not available and ask them to pick one of the times shown. Never pick a different day or time for them.` : '')
       : 'The customer has finished the guided conversation. Answer their questions with action "answer".',
     '',
     'Respond with JSON only: {"action": "answer" | "select" | "handoff", "option_id": string or null, "reply": string, "item_ids": string[], "send_document": boolean}.',
   ].filter((l) => l !== '').join('\n');
 }
+
+/** "Tuesday, 24 Nov 2026, 5:51 AM" in site time (IST by default), so the AI knows what "today" is. */
+const todayLabel = (offset, now = new Date()) => {
+  const off = (() => { const m = /^([+-])(\d{2}):?(\d{2})$/.exec(String(offset || '+05:30')); return m ? (m[1] === '-' ? -1 : 1) * (Number(m[2]) * 60 + Number(m[3])) : 330; })();
+  const d = new Date(now.getTime() + off * 60000);
+  const day = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][d.getUTCDay()];
+  const mon = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'][d.getUTCMonth()];
+  const h = d.getUTCHours(); const mm = String(d.getUTCMinutes()).padStart(2, '0');
+  return `${day}, ${d.getUTCDate()} ${mon} ${d.getUTCFullYear()}, ${h % 12 || 12}:${mm} ${h < 12 ? 'AM' : 'PM'}`;
+};
 
 const turnText = (t) => {
   if (t.sent_by === 'customer') return t.text || `[${t.type}]`;
@@ -83,7 +98,7 @@ const turnText = (t) => {
  */
 export async function aiDecide(env, { tenant, aiCfg, pending, history, catalog = [], customerPlace = null }) {
   if (!env.AI) return null;
-  const messages = [{ role: 'system', content: systemPrompt(tenant, aiCfg, pending, catalog, customerPlace) }];
+  const messages = [{ role: 'system', content: systemPrompt(tenant, aiCfg, pending, catalog, customerPlace, env.SITE_UTC_OFFSET) }];
   for (const t of history) messages.push({ role: t.direction === 'in' ? 'user' : 'assistant', content: turnText(t).slice(0, 1500) });
   if (messages[messages.length - 1].role !== 'user') return null;
 

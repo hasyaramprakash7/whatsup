@@ -7,6 +7,7 @@ import { recordInbound, outboundRecorder } from '../lib/chatlog.js';
 import { Conversation, freshState, isOptOut } from '../lib/engine.js';
 import { WhatsAppClient } from '../lib/whatsapp.js';
 import { setUtcOffset } from '../lib/slots.js';
+import { MEDIA_TYPES, saveInboundMedia } from '../lib/media.js';
 
 const SEEN_TTL_MS = 7 * 24 * 3600 * 1000;
 
@@ -62,9 +63,15 @@ export class ConversationDO extends DurableObject {
     const exists = message.id
       ? await this.env.DB.prepare("SELECT 1 FROM messages WHERE tenant_id = ? AND wa_message_id = ? AND direction = 'in'").bind(tenantId, message.id).first()
       : null;
-    const lead = exists ? await getLead(this.env, tenantId, from) : (await recordInbound(this.env, tenantId, from, message, profileName)).lead;
+    let msg = message;
+    if (!exists && MEDIA_TYPES.includes(message.type)) {
+      // Photos, voice notes, videos and documents are copied to R2 so the Inbox can show and play them.
+      const saved = await saveInboundMedia(this.env, { tenantId, accessToken: await tenantAccessToken(this.env, tenant), message });
+      if (saved) msg = { ...message, _media: saved };
+    }
+    const lead = exists ? await getLead(this.env, tenantId, from) : (await recordInbound(this.env, tenantId, from, msg, profileName)).lead;
     if (!lead) throw new Error('Could not record the inbound message');
-    return { tenant, lead, from, message };
+    return { tenant, lead, from, message: msg };
   }
 
   async respond({ tenant, lead, from, message }) {
@@ -80,7 +87,9 @@ export class ConversationDO extends DurableObject {
       ai: new WhatsAppClient(this.env, auth, { onSent: outboundRecorder(this.env, tenant._id, 'ai') }),
       admin: new WhatsAppClient(this.env, auth),
     });
-    const state = await convo.handle(message);
+    // A transcribed voice note is answered exactly like the same words typed.
+    const transcript = message._media?.transcript;
+    const state = await convo.handle(transcript ? { ...message, type: 'text', text: { body: transcript }, voice: true } : message);
     await this.ctx.storage.put('state', state);
   }
 }

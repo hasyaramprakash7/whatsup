@@ -158,7 +158,16 @@ export function validateAi(input) {
     instructions: str(a.instructions),
     dailyLimit: Math.round(Number(a.dailyLimit ?? 300)),
     answerAfterFlow: a.answerAfterFlow !== false,
+    // When the AI answers: 'always' (24/7) or 'hours' (only on the chosen days between from and to, site time).
+    schedule: a.schedule === 'hours' ? 'hours' : 'always',
+    hoursFrom: str(a.hoursFrom) || '09:00',
+    hoursTo: str(a.hoursTo) || '21:00',
+    days: Array.isArray(a.days) ? [...new Set(a.days.map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort() : [0, 1, 2, 3, 4, 5, 6],
   };
+  const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
+  if (!HHMM.test(value.hoursFrom) || !HHMM.test(value.hoursTo)) errors.push('AI hours: use times like 09:00 and 21:00.');
+  else if (value.schedule === 'hours' && value.hoursFrom === value.hoursTo) errors.push('AI hours: the start and end times must differ.');
+  if (value.schedule === 'hours' && !value.days.length) errors.push('AI hours: pick at least one day.');
   if (value.tone.length > 200) errors.push('Tone: up to 200 characters.');
   if (value.instructions.length > 2000) errors.push('Extra instructions: up to 2000 characters.');
   if (!Number.isFinite(value.dailyLimit) || value.dailyLimit < 0 || value.dailyLimit > 20000) errors.push('Daily AI reply limit must be 0–20000.');

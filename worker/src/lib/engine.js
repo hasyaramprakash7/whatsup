@@ -3,14 +3,15 @@
 import { fill, normalizePhone } from './text.js';
 import { stepById, stepAfter } from './flow.js';
 import { DEFAULT_MESSAGES } from './templates.js';
-import { buildVisitSlots, parseSlotId, formatSlotLong } from './slots.js';
+import { buildVisitSlots, parseSlotId, formatSlotLong, withinAiHours } from './slots.js';
 import { aiDecide } from './ai.js';
 import { upsertLead, recentTurns, takeAiReply, listCatalog, itemCaption, layoutOf } from './db.js';
 import { publish } from './chatlog.js';
 import { detailsShort, hasPin, areasOf, inArea } from './itemfields.js';
 import { geocode, reverseGeocode, distanceKm, kmLabel, mapsLink } from './geo.js';
 
-const MAX_UNEXPECTED = 2;              // re-ask this many times, then hand over to a person
+const RESEND_EVERY_MS = 10 * 60 * 1000;
+const MAX_UNEXPECTED = 2;             // re-ask this many times, then hand over to a person
 const STATE_TTL_MS = 24 * 3600 * 1000;  // a conversation idle this long starts over
 const OPT_OUT_TEXTS = ['stop', 'unsubscribe', 'opt out', 'optout', 'not interested'];
 const STATUS_RANK = { NEW: 0, CONTACTED: 1, ENGAGED: 2, QUALIFIED: 3, CONVERTED: 4, COLD: -1 };
@@ -131,6 +132,7 @@ export class Conversation {
 
   async aiAvailable(message) {
     if (!this.aiCfg.enabled || !textOf(message) || message.type !== 'text') return false;
+    if (!withinAiHours(this.aiCfg)) return false; // outside the AI's hours the bot's normal replies are used
     return takeAiReply(this.env, this.tenant._id, this.aiCfg.dailyLimit ?? 300);
   }
 
@@ -150,6 +152,17 @@ export class Conversation {
       const it = await this.item(iid.slice(5));
       if (it) { this.state.itemId = it._id; await this.sendItem(it); }
       else await this.bot.text(this.phone, 'Sorry, that one is no longer available.').catch(() => {});
+      return this.touch();
+    }
+
+    // A message Meta can't share (poll, view-once, edited…): it isn't a wrong answer, so it never counts
+    // towards handing the chat to the team. Ask them to resend (at most once per 10 minutes, each message costs).
+    // A brand-new chat still gets the welcome below, like a "Hi".
+    if (message.type === 'unsupported' && (this.state.stepId || this.state.done)) {
+      if (!this.state.resendAskedAt || Date.now() - this.state.resendAskedAt > RESEND_EVERY_MS) {
+        this.state.resendAskedAt = Date.now();
+        await this.bot.text(this.phone, "Sorry, we couldn't open that message 🙏 Please send it again as a text, photo, voice note or document.").catch(() => {});
+      }
       return this.touch();
     }
 
@@ -423,7 +436,7 @@ export class Conversation {
 
   pendingFor(step) {
     if (step.type === 'choice') return { question: this.t(step.text), options: step.options.map((o) => ({ id: o.id, title: o.title })) };
-    if (step.type === 'slots') return { question: this.t(step.text), options: buildVisitSlots(new Date(), 3, step.plan).map((s) => ({ id: s.id, title: s.title })) };
+    if (step.type === 'slots') return { slots: true, question: this.t(step.text), options: buildVisitSlots(new Date(), 3, step.plan).map((s) => ({ id: s.id, title: s.title })) };
     if (step.input === 'location') return { question: this.t(step.text), options: areasOf(this._catalog || []).map((a) => ({ id: `AREA_${a.key}`, title: [a.name, ...a.pincodes].join(' ') })) };
     return { question: this.t(step.text), options: [] };
   }

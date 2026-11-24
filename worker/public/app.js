@@ -54,6 +54,7 @@
     list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01"/>',
     template: '<rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>',
     user: '<circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/>',
+    mic: '<rect x="9" y="2" width="6" height="12" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v4M8 22h8"/>',
     phone: '<path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.4 1.8.7 2.7a2 2 0 0 1-.5 2.1L8 9.8a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.9.3 1.8.6 2.7.7a2 2 0 0 1 1.7 2z"/>',
     refresh: '<path d="M21 12a9 9 0 1 1-2.6-6.4L21 8M21 3v5h-5"/>',
     clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
@@ -176,6 +177,33 @@
     if (res.status === 401) { signOut('Your session expired or the key is no longer valid. Please sign in again.'); throw new Error('Not signed in'); }
     return res;
   }
+  // Customer photos / voice notes / videos / documents: fetched with the API key, shown from a blob URL.
+  const mediaCache = new Map();
+  const mediaUrl = (tid, file) => {
+    const k = `${tid}/${file}`;
+    if (!mediaCache.has(k)) {
+      mediaCache.set(k, authFetch(`${API}/media/${tid}/${file}`).then((r) => { if (!r.ok) throw new Error(`HTTP ${r.status}`); return r.blob(); }).then((b) => URL.createObjectURL(b)));
+      mediaCache.get(k).catch(() => mediaCache.delete(k));
+    }
+    return mediaCache.get(k);
+  };
+  function hydrateMedia(root = document) {
+    root.querySelectorAll('[data-media]:not([data-state])').forEach((el) => {
+      el.dataset.state = 'loading';
+      mediaUrl(state.tenantId, el.dataset.media).then((url) => {
+        const kind = el.dataset.kind;
+        if (kind === 'image') { el.href = url; el.querySelector('img').src = url; }
+        else if (kind === 'file') el.href = url;
+        else el.src = url;
+        el.dataset.state = 'ready';
+      }).catch(() => {
+        el.dataset.state = 'error';
+        el.insertAdjacentHTML('afterend', '<div class="text muted small">Could not load this file.</div>');
+      });
+    });
+  }
+  new MutationObserver(() => hydrateMedia()).observe(document.documentElement, { childList: true, subtree: true });
+
   async function api(method, url, body) {
     const opts = { method };
     if (body !== undefined) { opts.body = JSON.stringify(body); opts.headers = { 'Content-Type': 'application/json' }; }
@@ -185,7 +213,7 @@
     return data;
   }
   async function uploadFile(url, file, extra = {}) {
-    const fd = new FormData(); fd.append('file', file);
+    const fd = new FormData(); if (file) fd.append('file', file);
     for (const [k, v] of Object.entries(extra)) fd.append(k, v);
     const res = await authFetch(API + url, { method: 'POST', body: fd });
     const data = await res.json().catch(() => ({}));
@@ -268,7 +296,27 @@
     const i = state.tenants.findIndex((x) => x._id === res.data._id);
     if (i >= 0) state.tenants[i] = res.data;
     if (isAdmin()) renderTenantSelect();
+    renderAiQuick();
   }
+  // Top-bar AI switch: one click turns the AI assistant on or off for this business, from any page.
+  function renderAiQuick() {
+    const b = $('#ai-quick'); if (!b) return;
+    const a = state.tenant?.ai || {};
+    b.hidden = !state.tenant;
+    const live = a.enabled && a.schedule === 'hours';
+    b.className = `ai-quick ${a.enabled ? (live ? 'on paused' : 'on') : ''}`;
+    b.querySelector('.lbl').textContent = a.enabled ? (a.schedule === 'hours' ? `AI on · ${a.hoursFrom || '09:00'}–${a.hoursTo || '21:00'}` : 'AI on · 24/7') : 'AI off';
+  }
+  $('#ai-quick').addEventListener('click', async () => {
+    if (!state.tenant) return;
+    const ai = { ...(state.tenant.ai || {}), enabled: !state.tenant.ai?.enabled };
+    try {
+      const res = await api('PATCH', `/tenants/${state.tenantId}`, { ai });
+      applyTenantPayload(res);
+      if (state.route.page === 'ai') { state.aiDraft = null; renderAi(); hydrateIcons($('#page')); }
+      toast(ai.enabled ? 'AI assistant is on' : 'AI assistant is off', ai.enabled ? 'It answers customers’ typed and spoken questions.' : 'The bot keeps running your flow; the AI stays quiet.');
+    } catch (err) { toast('Could not change the AI', err.message, { kind: 'error' }); }
+  });
 
   async function selectTenant(id, { silent } = {}) {
     state.tenantId = id;
@@ -347,9 +395,29 @@
       refreshUnread();
       const viewing = state.route.page === 'inbox' && ib?.active === message.phone && document.visibilityState === 'visible';
       if (!viewing) toast(displayName(lead || { phone: message.phone }), message.text || 'New message', { kind: 'chat', onClick: () => { location.hash = `#/inbox/${message.phone}`; } });
+      notifyDesktop(displayName(lead || { phone: message.phone }), message.text || message.meta?.label || 'New message', message.phone);
     }
     if (state.route.page === 'overview') refreshOverview();
   }
+  // Desktop notification + chime for customer messages when this tab is in the background.
+  let chimeCtx = null;
+  function chime() {
+    try {
+      chimeCtx = chimeCtx || new (window.AudioContext || window.webkitAudioContext)();
+      const o = chimeCtx.createOscillator(); const g = chimeCtx.createGain();
+      o.frequency.value = 880; g.gain.setValueAtTime(0.0001, chimeCtx.currentTime);
+      g.gain.exponentialRampToValueAtTime(0.15, chimeCtx.currentTime + 0.02); g.gain.exponentialRampToValueAtTime(0.0001, chimeCtx.currentTime + 0.35);
+      o.connect(g).connect(chimeCtx.destination); o.start(); o.stop(chimeCtx.currentTime + 0.4);
+    } catch { /* sound is optional */ }
+  }
+  function notifyDesktop(title, body, phone) {
+    chime();
+    if (document.visibilityState === 'visible' || !('Notification' in window) || Notification.permission !== 'granted') return;
+    const n = new Notification(title, { body: String(body).slice(0, 140), tag: `chat-${phone}` });
+    n.onclick = () => { window.focus(); location.hash = `#/inbox/${phone}`; n.close(); };
+  }
+  // Browsers only allow asking for notification permission after a click.
+  document.addEventListener('click', () => { if ('Notification' in window && Notification.permission === 'default') Notification.requestPermission().catch(() => {}); }, { once: true });
   function onLiveStatus({ id, status, error, phone }) {
     const ib = state.inbox;
     if (!ib || ib.active !== phone) return;
@@ -647,9 +715,33 @@
     let inner = ''; let after = '';
     const textHtml = (t) => (t ? `<div class="text">${wa(t)}</div>` : '');
     const photo = (src) => `<a href="${esc(src)}" target="_blank" rel="noopener" class="bubble-photo"><img src="${esc(src)}" alt="" loading="lazy" /></a>`;
+    // Customer media saved in R2: loaded with the API key (see hydrateMedia), so it is never public.
+    const file = meta.media ? esc(meta.media) : '';
+    const missing = (what) => `<div class="tapped">${esc(meta.label || m.type)}</div>${textHtml(m.text)}<div class="text muted small">${meta.tooLarge ? 'File is too large to show here.' : `This ${what} could not be loaded.`}</div>`;
     switch (m.type) {
       case 'image':
-        inner = `${meta.link ? photo(meta.link) : ''}${textHtml(m.text)}`;
+      case 'sticker':
+        if (meta.link) inner = `${photo(meta.link)}${textHtml(m.text)}`;
+        else if (file) inner = `<a class="bubble-photo media-slot ${m.type}" data-media="${file}" data-kind="image" target="_blank" rel="noopener"><img alt="Photo from customer" /></a>${textHtml(m.text)}`;
+        else inner = missing('photo');
+        break;
+      case 'audio':
+      case 'voice':
+        inner = file
+          ? `<div class="tapped">${icon('mic', 'sm')}Voice message</div><audio class="media-slot" data-media="${file}" data-kind="audio" controls preload="none"></audio>${m.text ? `<div class="transcript"><span>${meta.transcript ? 'Transcript' : 'Caption'}</span>${wa(m.text)}</div>` : ''}`
+          : missing('voice message');
+        break;
+      case 'video':
+        inner = file ? `<video class="media-slot bubble-video" data-media="${file}" data-kind="video" controls preload="none"></video>${textHtml(m.text)}` : missing('video');
+        break;
+      case 'unsupported':
+        inner = `<div class="tapped">${icon('alert', 'sm')}${esc(meta.label || 'Unsupported message')}</div>
+          <dl class="unsup">
+            <dt>From</dt><dd>${esc(fmtPhone(m.phone))}</dd>
+            <dt>Kind</dt><dd>${esc(meta.kindLabel || 'Not told by Meta')}</dd>
+            ${meta.code ? `<dt>Meta code</dt><dd>${esc(meta.code)}${meta.title ? ` · ${esc(meta.title)}` : ''}</dd>` : ''}
+            <dt>Meta says</dt><dd>${esc(meta.details || meta.note || 'Message type is currently not supported.')}</dd></dl>
+          <div class="text muted small">Meta does not send the content of this message to any app. Ask the customer to send it again as text, a photo, a voice note or a document.</div>`;
         break;
       case 'buttons':
         inner = `${meta.image ? photo(meta.image) : ''}${textHtml(m.text)}`;
@@ -661,6 +753,8 @@
         after = `<div class="chips"><div class="chip">${icon('list', 'sm')}${esc(meta.button || 'Options')}</div></div>`;
         break;
       case 'document':
+        if (!meta.link && file) { inner = `<a class="attach media-slot" data-media="${file}" data-kind="file" download="${esc(meta.filename || 'document')}" target="_blank" rel="noopener"><span class="file-ico">${esc((meta.filename || '').split('.').pop().slice(0, 4).toUpperCase() || 'FILE')}</span><div class="grow"><strong>${esc(meta.filename || 'Document')}</strong><small>${meta.size ? `${Math.max(1, Math.round(meta.size / 1024))} KB · ` : ''}Open</small></div></a>${textHtml(m.text)}`; break; }
+        if (!meta.link && m.direction === 'in') { inner = missing('document'); break; }
         inner = `<a class="attach" href="${esc(meta.link || '#')}" target="_blank" rel="noopener"><span class="file-ico">PDF</span><div class="grow"><strong>${esc(meta.filename || 'Document')}</strong><small>Open document</small></div></a>${textHtml(m.text)}`;
         break;
       case 'location': {
@@ -674,7 +768,7 @@
       case 'reply': inner = `<div class="tapped">${icon('reply', 'sm')}Tapped</div>${textHtml(m.text)}`; break;
       case 'reaction': inner = `<div class="reaction">${esc(m.text)}</div>`; break;
       case 'text': inner = textHtml(m.text); break;
-      default: inner = `<div class="tapped">${esc(meta.label || m.type)}</div>${textHtml(m.text)}${!m.text ? '<div class="text muted small">Media is shown in WhatsApp</div>' : ''}`;
+      default: inner = `<div class="tapped">${esc(meta.label || m.type)}</div>${textHtml(m.text)}${!m.text ? '<div class="text muted small">This message could not be shown here.</div>' : ''}`;
     }
     return `<div class="msg ${out ? 'out' : 'in'} ${gap ? 'gap' : ''}" data-id="${esc(m._id)}"><div class="bubble">${whoHtml}${inner}${metaHtml(m)}</div>${after}</div>`;
   }
@@ -912,10 +1006,19 @@
   function renderBroadcast() {
     const t = state.tenant; const tp = t.templates || {};
     $('#page').innerHTML = `<div class="page-inner">
-      <div class="page-head"><div><h1>Broadcast</h1><p>Upload a contact list and send your approved WhatsApp template. Replies flow straight into your flow, the AI and your inbox.</p></div></div>
+      <div class="page-head"><div><h1>Broadcast</h1><p>Add numbers by hand or upload a contact list, then send your approved WhatsApp template. Replies flow straight into your flow, the AI and your inbox.</p></div></div>
       <div class="overview-grid">
-        <div class="card"><div class="card-head"><span class="section-icon">${icon('upload')}</span><div><h2>Import contacts</h2><p>CSV with a <code>phone</code> column (and optionally <code>name</code>)</p></div></div>
+        <div class="card"><div class="card-head"><span class="section-icon">${icon('upload')}</span><div><h2>Contacts</h2><p>Type numbers in directly, or import a CSV with a <code>phone</code> column (and optionally <code>name</code>)</p></div></div>
           <div class="card-body stack">
+            <form class="stack" id="bc-manual-form" autocomplete="off" style="gap:8px"><strong>Add a number</strong>
+              <div class="row wrap" style="gap:8px;align-items:flex-end">
+                <label class="field grow" style="min-width:140px;margin:0"><span>Name</span><input class="input" id="bc-m-name" maxlength="80" placeholder="Ravi Kumar" /></label>
+                <label class="field grow" style="min-width:160px;margin:0"><span>WhatsApp number</span><textarea class="input" id="bc-m-phone" rows="1" inputmode="tel" placeholder="98765 43210" style="resize:vertical;min-height:42px;padding-top:10px"></textarea></label>
+                <button class="btn primary" type="submit" style="height:42px">${icon('plus')}Add</button></div>
+              <span class="hint">Press Enter to add. 10-digit numbers get +91. To add many at once, paste lines like <code>Ravi, 9876543210</code> into the number box.</span>
+              <div id="bc-m-error"></div>
+              <div id="bc-m-list" class="row wrap" style="gap:6px"></div></form>
+            <div class="row" style="gap:10px;color:var(--text-3)"><span style="flex:1;height:1px;background:var(--border)"></span><span class="small">or import a CSV</span><span style="flex:1;height:1px;background:var(--border)"></span></div>
             <label class="dropzone" id="csv-drop"><input type="file" id="csv-file" accept=".csv,text/csv" />
               <span class="section-icon">${icon('upload', 'lg')}</span><strong>Drop your CSV here or click to choose</strong><span class="hint">10-digit Indian numbers get +91 automatically · you choose who gets it before sending</span></label>
             <div id="csv-picked"></div>
@@ -934,28 +1037,84 @@
               <li>Numbers WhatsApp refuses (e.g. not on your test list) show as Failed with the reason.</li></ul></div>
         </div></div></div>`;
     let file = null;
+    const manual = []; // [{ name, phone }] typed in by hand
+    let previewSeq = 0;
     const bc = { contacts: null, sel: new Set(), filter: 'all', search: '', summary: null };
+    const hasInput = () => !!file || manual.length > 0;
+    const manualField = () => (manual.length ? { manual: JSON.stringify(manual) } : {});
+    const toDigits = (p) => { let d = String(p).replace(/\D/g, ''); if (d.length === 10) d = '91' + d; else if (d.length === 11 && d[0] === '0') d = '91' + d.slice(1); return d.length >= 11 && d.length <= 15 ? d : null; };
+    const drawManual = () => {
+      const el = $('#bc-m-list'); if (!el) return;
+      el.innerHTML = manual.map((m, i) => `<span class="pill d-READ" style="gap:4px;padding-right:4px">${esc(m.name || 'No name')} · ${esc(m.phone)}<button type="button" class="btn icon sm ghost" data-mrm="${i}" aria-label="Remove ${esc(m.name || m.phone)}" style="height:20px;width:20px;min-width:20px">${icon('x', 'sm')}</button></span>`).join('')
+        + (manual.length > 1 ? '<button type="button" class="btn sm ghost" data-mrm="all">Remove all</button>' : '');
+      hydrateIcons(el);
+    };
+    const addManual = () => {
+      const nameIn = $('#bc-m-name'); const phoneIn = $('#bc-m-phone'); const errEl = $('#bc-m-error');
+      const raw = phoneIn.value.trim(); errEl.innerHTML = '';
+      if (!raw) { phoneIn.focus(); return; }
+      // One number, or many pasted lines like "Name, number" / "number, Name" / "number"
+      const lines = raw.split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+      const parsed = lines.length === 1 && !/[a-z]/i.test(raw)
+        ? [{ name: nameIn.value.trim(), phone: raw }]
+        : lines.map((l) => {
+          const parts = l.split(/[,;\t]/).map((x) => x.trim()).filter(Boolean);
+          const ph = parts.find((x) => toDigits(x)) || parts.find((x) => /\d{6,}/.test(x)) || l;
+          return { name: parts.filter((x) => x !== ph).join(' ').trim() || (lines.length === 1 ? nameIn.value.trim() : ''), phone: ph };
+        });
+      const bad = []; let added = 0;
+      for (const m of parsed) {
+        const d = toDigits(m.phone);
+        if (!d) { bad.push(m.phone); continue; }
+        const existing = manual.find((x) => toDigits(x.phone) === d);
+        if (existing) { if (m.name) existing.name = m.name.slice(0, 80); added++; continue; }
+        if (manual.length >= 500) { bad.push(`${m.phone} (500 max, use a CSV)`); continue; }
+        manual.push({ name: m.name.slice(0, 80), phone: '+' + d }); added++;
+      }
+      if (bad.length) errEl.innerHTML = `<div class="banner red">${icon('alert')}<div>Not a valid number: ${bad.slice(0, 5).map(esc).join(', ')}${bad.length > 5 ? ` and ${bad.length - 5} more` : ''}</div></div>`;
+      if (added) { nameIn.value = ''; phoneIn.value = ''; }
+      (bad.length && !added ? phoneIn : nameIn).focus();
+      if (added) { drawManual(); refreshPreview(); }
+    };
+    $('#bc-manual-form').addEventListener('submit', (e) => { e.preventDefault(); addManual(); });
+    $('#bc-m-name').addEventListener('keydown', (e) => { if (e.key === 'Enter') { e.preventDefault(); if ($('#bc-m-phone').value.trim()) addManual(); else $('#bc-m-phone').focus(); } });
+    $('#bc-m-phone').addEventListener('keydown', (e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); addManual(); } });
+    $('#bc-m-list').addEventListener('click', (e) => {
+      const b = e.target.closest('[data-mrm]'); if (!b) return;
+      if (b.dataset.mrm === 'all') { manual.length = 0; } else { const [m] = manual.splice(Number(b.dataset.mrm), 1); if (m) bc.sel.delete(toDigits(m.phone)); }
+      drawManual(); refreshPreview();
+    });
+    // Re-reads who is in the list (typed + CSV), keeping the ticks the user already made.
+    const refreshPreview = async () => {
+      const seq = ++previewSeq; const prevSel = bc.sel; const prevKnown = new Set((bc.contacts || []).map((x) => x.phone));
+      $('#broadcast-result').innerHTML = '';
+      if (!hasInput()) { bc.contacts = null; bc.sel = new Set(); $('#csv-contacts').innerHTML = ''; updateSendButton(); return; }
+      if (!bc.contacts) $('#csv-contacts').innerHTML = '<div class="skeleton" style="height:160px"></div>';
+      try {
+        const res = await uploadFile(`/leads/${state.tenantId}/preview`, file, manualField());
+        if (seq !== previewSeq) return; // a newer change is loading
+        bc.contacts = res.data; bc.summary = res.summary;
+        // Keep earlier ticks; anyone new to the list is ticked only if they never got a broadcast.
+        bc.sel = new Set(res.data.filter((x) => x.state !== 'optedOut' && (prevKnown.has(x.phone) ? prevSel.has(x.phone) : x.state === 'new')).map((x) => x.phone));
+        drawContacts();
+      } catch (err) {
+        if (seq !== previewSeq) return;
+        bc.contacts = null; $('#csv-contacts').innerHTML = `<div class="banner red">${icon('alert')}<div>${esc(err.message)}</div></div>`; updateSendButton();
+      }
+    };
     const pick = async (f) => {
       file = f || null; bc.contacts = null; bc.sel = new Set();
       $('#csv-picked').innerHTML = file ? `<div class="file-picked">${icon('file')}<div class="grow" style="min-width:0"><strong>${esc(file.name)}</strong><div class="hint">${(file.size / 1024).toFixed(1)} KB</div></div><button class="btn icon sm ghost" id="csv-clear" aria-label="Remove file">${icon('x', 'sm')}</button></div>` : '';
       $('#csv-clear')?.addEventListener('click', (e) => { e.preventDefault(); $('#csv-file').value = ''; pick(null); });
-      $('#csv-contacts').innerHTML = file ? '<div class="skeleton" style="height:160px"></div>' : '';
-      $('#broadcast-result').innerHTML = '';
+      bc.filter = 'all'; bc.search = '';
       updateSendButton();
-      if (!file) return;
-      try {
-        const res = await uploadFile(`/leads/${state.tenantId}/preview`, file);
-        if (file !== f) return; // another file was picked meanwhile
-        bc.contacts = res.data; bc.summary = res.summary; bc.filter = 'all'; bc.search = '';
-        // Everyone new is ticked; people who already got a broadcast are not, to avoid sending twice.
-        bc.sel = new Set(res.data.filter((x) => x.state === 'new').map((x) => x.phone));
-        drawContacts();
-      } catch (err) { $('#csv-contacts').innerHTML = `<div class="banner red">${icon('alert')}<div>${esc(err.message)}</div></div>`; }
+      // Everyone new is ticked; people who already got a broadcast are not, to avoid sending twice.
+      await refreshPreview();
     };
     const updateSendButton = () => {
       const btn = $('#send-broadcast'); if (!btn || btn.querySelector('.spinner')) return;
       const n = bc.sel.size;
-      btn.disabled = !file || !bc.contacts || !n;
+      btn.disabled = !hasInput() || !bc.contacts || !n;
       btn.innerHTML = `${icon('send')}${bc.contacts ? `Send to ${n.toLocaleString()} selected` : 'Send broadcast'}`;
     };
     const visibleContacts = () => {
@@ -1009,20 +1168,20 @@
     });
     wireDropzone($('#csv-drop'), $('#csv-file'), pick);
     $('#send-broadcast').addEventListener('click', async () => {
-      if (!file || !bc.sel.size) return;
+      if (!hasInput() || !bc.sel.size) return;
       const btn = $('#send-broadcast');
       btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Sending…';
       try {
-        const data = await uploadFile(`/leads/${state.tenantId}/upload`, file, { phones: JSON.stringify([...bc.sel]) });
+        const data = await uploadFile(`/leads/${state.tenantId}/upload`, file, { ...manualField(), phones: JSON.stringify([...bc.sel]) });
         const s = data.summary || {};
         $('#broadcast-result').innerHTML = `<div class="banner green">${icon('check')}<div><strong>${esc(data.message)}</strong></div></div>
           <div class="stat-chips" style="margin-top:12px">
-            ${[['Queued', s.enqueued], ['Rows in file', s.total], ['Not selected', s.notSelected], ['Duplicates', s.duplicatesSkipped], ['Invalid numbers', s.invalidSkipped], ['Opted out', s.optedOutSkipped], ['Recently contacted', s.recentlyContactedSkipped], ['Quota left today', s.quotaRemaining]]
+            ${[['Queued', s.enqueued], ['Contacts', s.total], ['Not selected', s.notSelected], ['Duplicates', s.duplicatesSkipped], ['Invalid numbers', s.invalidSkipped], ['Opted out', s.optedOutSkipped], ['Recently contacted', s.recentlyContactedSkipped], ['Quota left today', s.quotaRemaining]]
               .filter(([, v]) => v !== undefined).map(([k, v]) => `<div class="stat-chip"><b>${(v ?? 0).toLocaleString()}</b><span>${k}</span></div>`).join('')}</div>
           ${data.invalidSamples?.length ? `<p class="hint" style="margin-top:8px">Invalid examples: ${data.invalidSamples.map(esc).join(', ')}</p>` : ''}`;
         toast('Broadcast queued', `${s.enqueued} messages are on their way.`);
         log(`Broadcast queued: ${s.enqueued} messages.`, 'success');
-        $('#csv-file').value = ''; file = null; bc.contacts = null; bc.sel = new Set(); $('#csv-picked').innerHTML = ''; $('#csv-contacts').innerHTML = '';
+        $('#csv-file').value = ''; file = null; manual.length = 0; drawManual(); bc.contacts = null; bc.sel = new Set(); $('#csv-picked').innerHTML = ''; $('#csv-contacts').innerHTML = '';
         setTimeout(loadQueueStats, 1500);
       } catch (err) {
         $('#broadcast-result').innerHTML = `<div class="banner red">${icon('alert')}<div>${esc(err.message)}</div></div>`;
@@ -1406,6 +1565,7 @@
     restaurant: { title: 'Menu', one: 'dish', ex: ['Paneer Tikka', '₹280', 'Starters', 'Chargrilled cottage cheese, mint chutney'] },
     coaching: { title: 'Courses', one: 'course', ex: ['JEE Foundation', '₹45,000 / year', 'Class 9–10', 'Weekend batches, online or at the centre'] },
     retail: { title: 'Products', one: 'product', ex: ['Cotton Kurta', '₹899', 'Women', 'Sizes S–XXL, 5 colours'] },
+    software: { title: 'Services & packages', one: 'service', ex: ['Custom MVP / Web Portal', 'from ₹5 Lakh', 'Fixed scope', 'UI/UX, full-stack build, deployment, 100% source ownership'] },
     general: { title: 'Products & services', one: 'item', ex: ['Website design', 'from ₹15,000', 'Services', '5 pages, mobile friendly, 2 weeks'] },
   };
   // Products & services belong to one layout (flow template). Customers see the selected layout's items.
@@ -1643,6 +1803,15 @@
               <label class="field"><span>Extra instructions <span class="muted">(optional)</span></span><textarea name="instructions" rows="4" maxlength="2000" placeholder="e.g. Always mention our free parking. Never discuss discounts — hand over to the team instead.">${esc(a.instructions || '')}</textarea></label>
               <div class="grid-2"><label class="field"><span>Max AI replies per day</span><input class="input" name="dailyLimit" type="number" min="0" max="20000" value="${esc(a.dailyLimit ?? 300)}" /><span class="hint">Controls cost. After this the bot uses its normal replies.</span></label>
                 <label class="field"><span>After the flow is finished</span><label class="switch" style="margin-top:8px"><input type="checkbox" name="answerAfterFlow" ${a.answerAfterFlow !== false ? 'checked' : ''} /><span class="track"></span>Keep answering questions</label></label></div>
+              <div class="field"><span>When the AI answers</span>
+                <div class="seg" role="radiogroup" style="display:flex;gap:16px;margin-top:6px">
+                  <label class="row" style="gap:6px"><input type="radio" name="schedule" value="always" ${a.schedule !== 'hours' ? 'checked' : ''} />24/7 (always)</label>
+                  <label class="row" style="gap:6px"><input type="radio" name="schedule" value="hours" ${a.schedule === 'hours' ? 'checked' : ''} />Only at set hours</label></div>
+                <div id="ai-hours" class="stack" style="margin-top:10px;gap:10px" ${a.schedule === 'hours' ? '' : 'hidden'}>
+                  <div class="grid-2"><label class="field"><span>From</span><input class="input" type="time" name="hoursFrom" value="${esc(a.hoursFrom || '09:00')}" /></label>
+                    <label class="field"><span>To</span><input class="input" type="time" name="hoursTo" value="${esc(a.hoursTo || '21:00')}" /></label></div>
+                  <div class="ai-days">${['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].map((d, i) => `<label><input type="checkbox" name="days" value="${i}" ${(a.days || [0, 1, 2, 3, 4, 5, 6]).includes(i) ? 'checked' : ''} />${d}</label>`).join('')}</div>
+                  <span class="hint">Business time (IST). Outside these hours the bot still runs your flow and buttons, only the AI is off. "To" earlier than "From" means overnight, e.g. 21:00 to 09:00.</span></div></div>
               <div class="banner blue">${icon('info')}<div>The AI never invents prices or details. If something isn't in your profile, or the customer asks for a person, it hands over: the bot pauses for that chat and your team gets a WhatsApp alert.</div></div>
               <div id="ai-errors"></div>
               <div class="row"><span class="spacer"></span><button class="btn primary" type="submit">${icon('check')}Save</button></div></div></form>
@@ -1655,8 +1824,9 @@
               <div id="ai-a"></div></div></div>
         </div></div></div>`;
     const form = $('#ai-form');
-    const readForm = () => ({ enabled: $('#ai-enabled').checked, tone: form.tone.value, instructions: form.instructions.value, dailyLimit: Number(form.dailyLimit.value), answerAfterFlow: form.answerAfterFlow.checked });
+    const readForm = () => ({ enabled: $('#ai-enabled').checked, tone: form.tone.value, instructions: form.instructions.value, dailyLimit: Number(form.dailyLimit.value), answerAfterFlow: form.answerAfterFlow.checked, schedule: form.querySelector('[name=schedule]:checked')?.value || 'always', hoursFrom: form.hoursFrom.value, hoursTo: form.hoursTo.value, days: [...form.querySelectorAll('[name=days]:checked')].map((x) => Number(x.value)) });
     form.addEventListener('input', () => { state.aiDraft.draft = readForm(); state.aiDraft.dirty = true; });
+    form.addEventListener('change', (e) => { if (e.target.name === 'schedule') $('#ai-hours').hidden = e.target.value !== 'hours'; });
     const save = async (okMsg) => {
       try {
         const res = await api('PATCH', `/tenants/${state.tenantId}`, { ai: readForm() });

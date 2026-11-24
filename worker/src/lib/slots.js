@@ -12,6 +12,21 @@ function parseOffsetMinutes(value) {
 }
 
 
+/** Is `now` inside the business's AI hours? cfg: { schedule, hoursFrom, hoursTo, days } in site-local time. */
+export function withinAiHours(cfg, now = new Date()) {
+  if (!cfg || cfg.schedule !== 'hours') return true;
+  const local = new Date(now.getTime() + OFFSET_MIN * 60000);
+  const mins = local.getUTCHours() * 60 + local.getUTCMinutes();
+  const toMin = (s) => { const [h, m] = String(s).split(':').map(Number); return h * 60 + m; };
+  const from = toMin(cfg.hoursFrom || '09:00'); const to = toMin(cfg.hoursTo || '21:00');
+  const days = Array.isArray(cfg.days) ? cfg.days : [0, 1, 2, 3, 4, 5, 6];
+  const today = local.getUTCDay();
+  if (from < to) return days.includes(today) && mins >= from && mins < to;
+  // Overnight, e.g. 21:00–09:00: the part after midnight belongs to the previous day's window.
+  if (mins >= from) return days.includes(today);
+  return mins < to && days.includes((today + 6) % 7);
+}
+
 // Default slot plan (each flow step can set its own): tomorrow 11 AM, Saturday 4 PM, Sunday 11 AM.
 const DEFAULT_PLAN = [{ day: 'TOMORROW', time: '11:00' }, { day: 'SAT', time: '16:00' }, { day: 'SUN', time: '11:00' }];
 const WEEKDAY_INDEX = { SUN: 0, MON: 1, TUE: 2, WED: 3, THU: 4, FRI: 5, SAT: 6 };

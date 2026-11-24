@@ -129,6 +129,33 @@ export const TEMPLATES = [
     },
   },
   {
+    key: 'software', name: 'Software company', icon: 'layers',
+    description: 'Service needed, company, timeline, budget, project brief, technical call booking.',
+    flow: {
+      steps: [
+        choice('service', 'service', 'Service', 'Hello! 👋 Welcome to *{business}*. Custom software & AI, built to scale.\nWhat would you like to build with us?', [
+          ['OPT_AUTOMATION', 'CRM & automation', 'Business and CRM automation', 'AI & Automation'],
+          ['OPT_MOBILE', 'iOS & Android apps', 'iOS and Android apps', 'Mobile Engineering'],
+          ['OPT_WEB', 'Web portals & SaaS', 'Enterprise web portals & SaaS', 'Full-Stack Web'],
+          ['OPT_CLOUD', 'Cloud infrastructure', 'Zero-egress cloud infrastructure', 'Cloud & DevOps'],
+          ['OPT_API', 'APIs & payments', 'Custom APIs & payment pipelines', 'APIs & Integrations'],
+          ['OPT_AI', 'AI pipelines & 3D web', 'Custom AI pipelines & 3D commerce', 'AI & 3D Web'],
+        ], { setStatus: 'ENGAGED', forceList: true, listHeader: 'Our services', listButton: 'View services', listSection: 'Services' }),
+        question('company', 'company', 'Company', 'Great choice! What is your *company or project name*?', 'text'),
+        choice('timeline', 'timeline', 'Timeline', 'When would you like to start?', [
+          ['OPT_T_NOW', 'Within 1 month', 'Within 1 month'], ['OPT_T_SOON', '1–3 months', '1–3 months'], ['OPT_T_LATER', 'Just exploring', 'Just exploring'],
+        ]),
+        // No price figures here: every project gets its own quotation from the team.
+        question('budget', 'budget', 'Budget & options', 'What is your total budget, and which options or features do you need for *{service}*? 💬\nA rough idea is fine — our team will send you an exact quotation.', 'text', { setStatus: 'QUALIFIED' }),
+        question('brief', 'brief', 'Project brief', 'Tell us briefly what you want to build — features, users, any existing systems. 📝', 'text'),
+        question('contact', 'contact', 'Quotation to', 'Where should we send your quotation? Please type your *email address* or a *phone number* we can call. 📧📞', 'text'),
+        slots('call', 'call', 'Technical call', 'Book a free *technical & architecture call* with our lead engineer:', WORKDAYS),
+        finish('done', '✅ *Technical call booked!*\n\n• *Company:* {company}\n• *Service:* {service}\n• *Timeline:* {timeline}\n• *Call:* {call}\n• *Quotation to:* {contact}\n\nWe will send your quotation, scope and milestone plan within 24 hours. Questions before that? Call or WhatsApp +{adminPhone}. NDA available on request.'),
+      ],
+      messages: { ...DEFAULT_MESSAGES, completed: 'Thanks {name}! Our engineering team at *{business}* is reviewing your brief and will reply within 24 hours. For anything urgent, WhatsApp +{adminPhone}.' },
+    },
+  },
+  {
     key: 'general', name: 'General enquiry', icon: 'chat',
     description: 'Name, what they need, best time to call.',
     flow: {
@@ -149,7 +176,7 @@ export const getTemplate = (key) => TEMPLATES.find((t) => t.key === key) || TEMP
 export const flowFromTemplate = (key) => ({ enabled: true, template: getTemplate(key).key, ...JSON.parse(JSON.stringify(getTemplate(key).flow)) });
 
 // The question in each template that lists what the business sells; filled from Products & Services.
-const PRODUCT_STEP = { real_estate: 'home', clinic: 'dept', salon: 'service', coaching: 'course', retail: 'category' };
+const PRODUCT_STEP = { real_estate: 'home', clinic: 'dept', salon: 'service', coaching: 'course', retail: 'category', software: 'service' };
 
 /** Fits a name into a WhatsApp button/list title, cutting at a word: "JEE Crash Course with…". */
 const shorten = (name, max) => {

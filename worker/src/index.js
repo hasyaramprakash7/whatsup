@@ -13,6 +13,7 @@ import { TEMPLATES, flowFromTemplate, getTemplate, personalizeFlow } from './lib
 import { WhatsAppClient } from './lib/whatsapp.js';
 import { outboundRecorder, publish } from './lib/chatlog.js';
 import { aiDecide } from './lib/ai.js';
+import { MEDIA_FILE } from './lib/media.js';
 import { ITEM_FIELDS, cleanDetails, resolveMapPoint } from './lib/itemfields.js';
 import { geocode, reverseGeocode } from './lib/geo.js';
 import { takeAiReply, layoutOf, listCatalog, getItem, insertItem, updateItem, deleteItem, MAX_CATALOG_ITEMS } from './lib/db.js';
@@ -284,6 +285,46 @@ app.post('/api/tenants/:tid/rotate-key', requireAdmin, async (c) => {
   return c.json({ success: true, apiKey: key });
 });
 
+// ---------------- Meta (Graph API) setup ----------------
+async function graph(c, tenant, method, path, body) {
+  const base = String(c.env.GRAPH_BASE_URL || 'https://graph.facebook.com').replace(/\/$/, '');
+  const res = await fetch(`${base}/${c.env.GRAPH_API_VERSION || 'v25.0'}/${path}`, {
+    method,
+    headers: { Authorization: `Bearer ${await tenantAccessToken(c.env, tenant)}`, ...(body ? { 'Content-Type': 'application/json' } : {}) },
+    ...(body ? { body: JSON.stringify(body) } : {}),
+  });
+  const data = await res.json().catch(() => ({}));
+  return { ok: res.ok, status: res.status, data };
+}
+
+/** Template approval status, webhook subscription and number status for one business. */
+app.get('/api/tenants/:tid/meta-status', requireAdmin, async (c) => {
+  const t = await getTenant(c.env, c.req.param('tid'));
+  if (!t) return fail(c, 404, 'Not found');
+  if (!t.wabaId) return fail(c, 400, 'This business has no WABA ID.');
+  const [templates, subscribed, phone] = await Promise.all([
+    graph(c, t, 'GET', `${t.wabaId}/message_templates?fields=name,status,language,category,rejected_reason&limit=100`),
+    graph(c, t, 'GET', `${t.wabaId}/subscribed_apps`),
+    graph(c, t, 'GET', `${t.phoneNumberId}?fields=display_phone_number,verified_name,quality_rating,status,messaging_limit_tier`),
+  ]);
+  return c.json({ success: true, templates: templates.data, subscribedApps: subscribed.data, phone: phone.data });
+});
+
+/** webhook: true → point this WhatsApp account's webhook (WABA-level override) at this Worker. */
+app.post('/api/tenants/:tid/meta-setup', requireAdmin, async (c) => {
+  const t = await getTenant(c.env, c.req.param('tid'));
+  if (!t) return fail(c, 404, 'Not found');
+  if (!t.wabaId) return fail(c, 400, 'This business has no WABA ID.');
+  const b = await c.req.json().catch(() => ({}));
+  const out = { success: true };
+  if (b.webhook) {
+    const callback = `${new URL(c.req.url).origin}/webhook`;
+    out.webhook = { callback, ...(await graph(c, t, 'POST', `${t.wabaId}/subscribed_apps`, { override_callback_uri: callback, verify_token: c.env.WHATSAPP_VERIFY_TOKEN })) };
+    if (!out.webhook.ok) out.success = false;
+  }
+  return c.json(out, out.success ? 200 : 502);
+});
+
 // ---------------- documents (R2) ----------------
 app.post('/api/uploads/document/:tid', tenantAccess(), async (c) => {
   const tid = c.req.param('tid');
@@ -423,10 +464,21 @@ app.get('/api/leads/:tid/queue', tenantAccess(), async (c) => c.json({ success: 
 async function readCsvRecipients(c) {
   const form = await c.req.formData().catch(() => null);
   const file = form?.get('file');
-  if (!file || typeof file === 'string') throw Object.assign(new Error('Choose a CSV file.'), { status: 400 });
-  if (file.size > 10 * 1024 * 1024) throw Object.assign(new Error('CSV files can be at most 10 MB.'), { status: 400 });
-  const rows = parseCsv(await file.text());
-  if (!rows.length) throw Object.assign(new Error('The CSV is empty.'), { status: 400 });
+  // Contacts typed in by hand on the Broadcast page: JSON [{ name, phone }]. They come first, so their name wins.
+  let manual = [];
+  const manualRaw = form?.get('manual');
+  if (typeof manualRaw === 'string' && manualRaw) {
+    try { manual = JSON.parse(manualRaw); } catch { manual = []; }
+    if (!Array.isArray(manual)) manual = [];
+    if (manual.length > 500) throw Object.assign(new Error('Up to 500 numbers can be added by hand. Use a CSV for more.'), { status: 400 });
+    manual = manual.map((m) => ({ phone: String(m?.phone ?? '').slice(0, 40), name: String(m?.name ?? '').trim().slice(0, 80) }));
+  }
+  const hasFile = file && typeof file !== 'string';
+  if (!hasFile && !manual.length) throw Object.assign(new Error('Add a number or choose a CSV file.'), { status: 400 });
+  if (hasFile && file.size > 10 * 1024 * 1024) throw Object.assign(new Error('CSV files can be at most 10 MB.'), { status: 400 });
+  const csvRows = hasFile ? parseCsv(await file.text()) : [];
+  if (hasFile && !csvRows.length && !manual.length) throw Object.assign(new Error('The CSV is empty.'), { status: 400 });
+  const rows = [...manual, ...csvRows];
   const seen = new Set(); const recipients = []; const invalid = [];
   for (const row of rows) {
     const raw = pickPhone(row); const phone = normalizePhone(raw);
@@ -456,8 +508,8 @@ app.post('/api/leads/:tid/preview', tenantAccess(), async (c) => {
   const tenant = await getTenant(c.env, tid);
   if (!tenant) return fail(c, 404, 'Not found');
   let csv; try { csv = await readCsvRecipients(c); } catch (err) { return fail(c, err.status || 500, err.message); }
-  if (!csv.recipients.length) return fail(c, 400, 'No valid phone numbers found in the CSV.', { invalidSamples: csv.invalid.slice(0, 10) });
-  if (csv.recipients.length > 10000) return fail(c, 400, 'Up to 10,000 numbers per CSV.');
+  if (!csv.recipients.length) return fail(c, 400, 'No valid phone numbers found.', { invalidSamples: csv.invalid.slice(0, 10) });
+  if (csv.recipients.length > 10000) return fail(c, 400, 'Up to 10,000 numbers per broadcast.');
   const known = await knownLeads(c, tid, csv.recipients.map((r) => r.phone));
   const contacts = csv.recipients.map((r) => {
     const l = known.get(r.phone);
@@ -573,6 +625,15 @@ app.patch('/api/chats/:tid/:phone', tenantAccess(), phoneOk, async (c) => {
   if (!lead) return fail(c, 404, 'Chat not found');
   await publish(c.env, tid, 'lead:update', { lead });
   return c.json({ success: true, lead });
+});
+
+// Customer photos, voice notes, videos and documents (copied from WhatsApp to R2 when they arrive).
+app.get('/api/media/:tid/:file', tenantAccess(), async (c) => {
+  const { tid, file } = c.req.param();
+  if (!MEDIA_FILE.test(file)) return fail(c, 400, 'Invalid file name');
+  const obj = await c.env.MEDIA.get(`inbound/${tid}/${file}`);
+  if (!obj) return fail(c, 404, 'File not found');
+  return new Response(obj.body, { headers: { 'Content-Type': obj.httpMetadata?.contentType || 'application/octet-stream', 'Content-Length': String(obj.size), 'Cache-Control': 'private, max-age=86400' } });
 });
 
 app.notFound((c) => (c.req.path.startsWith('/api/') ? fail(c, 404, 'Not found') : c.env.ASSETS.fetch(c.req.raw)));

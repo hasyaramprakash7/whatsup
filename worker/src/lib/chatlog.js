@@ -53,13 +53,40 @@ export function describeInbound(message) {
     return { type: 'location', text: l.name || 'Shared location', meta: { latitude: l.latitude, longitude: l.longitude, name: l.name, address: l.address } };
   }
   if (t === 'reaction') return { type: 'reaction', text: message.reaction?.emoji || '' };
+  if (t === 'unsupported') {
+    // Meta never includes the content; keep every hint it does send (kind, error code, details).
+    const e = (message.errors || [])[0] || {};
+    const kind = message.unsupported?.type || null;
+    return { type: t, text: '', meta: {
+      label: '⚠️ Message WhatsApp does not share', note: unsupportedNote(message),
+      kind, kindLabel: UNSUPPORTED_KINDS[kind] || (kind ? kind.replace(/_/g, ' ') : null),
+      code: e.code || null, title: e.title || null, details: e.error_data?.details || e.message || null,
+    } };
+  }
   const media = message[t] || {};
-  return { type: t, text: media.caption || '', meta: { label: MEDIA_LABELS[t] || `[${t}]`, filename: media.filename || null } };
+  const saved = message._media || null; // set by the ConversationDO after copying the file to R2
+  const meta = { label: MEDIA_LABELS[t] || `[${t}]`, filename: media.filename || null };
+  if (saved?.key) Object.assign(meta, { media: saved.key.split('/').pop(), mime: saved.mime, size: saved.size });
+  if (saved?.tooLarge) meta.tooLarge = true;
+  // A voice note's text is its transcript, so the Inbox, the AI and the lead history can read it.
+  if (saved?.transcript) return { type: t, text: saved.transcript, meta: { ...meta, transcript: true } };
+  return { type: t, text: media.caption || '', meta };
 }
+
+// Kinds Meta may name in `unsupported.type` (it often sends none).
+const UNSUPPORTED_KINDS = {
+  edit: 'Edited message', poll_creation: 'Poll', poll_update: 'Poll vote', event_creation: 'Event invite',
+  view_once: 'View-once photo/video', ephemeral: 'Disappearing message', reaction: 'Reaction', unknown: 'Unknown type',
+};
+const unsupportedNote = (message) => {
+  const e = (message.errors || [])[0];
+  return e?.error_data?.details || e?.title || e?.message || 'For example a poll, a view-once photo or an edited message. Ask the customer to send it again as a normal message.';
+};
 
 function previewOf(type, text, meta) {
   const label = meta?.label || MEDIA_LABELS[type];
   if (type === 'template') return text;
+  if (meta?.transcript) return `${label} · “${text}”`;
   if (text) return label && type !== 'location' ? `${label} · ${text}` : text;
   return label || `[${type}]`;
 }
