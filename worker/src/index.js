@@ -227,7 +227,7 @@ app.post('/api/push/test', async (c) => {
   const sub = b.endpoint ? await getSubscription(c.env, String(b.endpoint)) : null;
   if (!sub || sub.scope !== pushScope(c.get('auth'))) return fail(c, 404, 'Turn notifications on first.');
   let r;
-  try { r = await sendPush(c.env, sub, { kind: 'test', title: 'Bluxury WhatsApp AI', body: 'Notifications are working. You will hear about new messages and bookings here.', url: '/#/overview', tag: 'test' }); }
+  try { r = await sendPush(c.env, sub, { kind: 'message', title: 'Bluxury WhatsApp AI', body: 'Test message: customer messages will appear like this, at the top of your screen.', url: '/#/inbox/0', tag: 'test', at: Date.now() }, { urgency: 'high' }); // same path as a real customer message }
   catch (err) { return fail(c, 502, `Could not reach the notification service: ${err.message}`); }
   if (r.gone) { await deleteSubscription(c.env, sub.endpoint); return fail(c, 410, 'This device turned notifications off. Turn them on again.'); }
   if (!r.ok) return fail(c, 502, `The notification service refused it (${r.status}).`);

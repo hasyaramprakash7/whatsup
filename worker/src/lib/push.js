@@ -132,7 +132,7 @@ export async function notifyTenant(env, tenantId, kind, { title, body, url, tag,
       const forAdmin = s.scope === '*' && businessName;
       const payload = { kind, title: forAdmin ? `${title} · ${businessName}` : title, body, url, tag: tag || kind, tenantId: String(tenantId), at: Date.now() };
       try {
-        const r = await sendPush(env, s, payload, { urgency: kind === 'broadcast' ? 'normal' : 'high', topic: tag });
+        const r = await sendPush(env, s, payload, { urgency: kind === 'broadcast' ? 'normal' : 'high' }); // no Topic: Android drops collapsed ones; the tag already replaces old ones on the phone
         if (r.ok) { sent++; console.log(`[Push] ${kind} delivered to a device`); return; }
         if (r.gone) { console.log('[Push] a device turned notifications off; removed'); await deleteSubscription(env, s.endpoint); }
         else {
