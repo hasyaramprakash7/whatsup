@@ -6,3 +6,7 @@ uploads/*
 logs/
 .DS_Store
 test.csv
+# Cloudflare Worker
+worker/node_modules/
+worker/.wrangler/
+worker/.dev.vars

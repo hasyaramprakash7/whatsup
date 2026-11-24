@@ -24,5 +24,6 @@ const upload = multer({
 router.get('/queue/stats', requireAdmin, leadController.getBroadcastStats);
 // Access check runs before multer so unauthorized uploads never touch disk.
 router.post('/upload/:tenantId', requireTenantAccess(), upload.single('file'), leadController.uploadLeadsAndBroadcast);
+router.get('/:tenantId/stats', requireTenantAccess(), leadController.getLeadStats);
 router.get('/:tenantId', requireTenantAccess(), leadController.getLeadsByTenant);
 module.exports = router;

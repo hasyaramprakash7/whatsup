@@ -1,4 +1,5 @@
 const fs = require('fs');
+const mongoose = require('mongoose');
 const fsPromises = require('fs/promises');
 const csv = require('csv-parser');
 const Tenant = require('../models/Tenant');
@@ -11,6 +12,7 @@ const COLUMN_CANDIDATES = { phone: ['phone', 'mobile', 'Phone', 'Mobile', 'phone
 const DAILY_LIMIT_BY_TIER = { 0: 250, 1: 1000, 2: 10000, 3: 100000 };
 // Skip leads broadcast to within this many days (0 = no cooldown). Opted-out (COLD) leads are always skipped.
 const COOLDOWN_DAYS = Number(process.env.BROADCAST_COOLDOWN_DAYS) || 0;
+const LEAD_STATUSES = Lead.schema.path('status').enumValues;
 
 function pickColumn(row, candidates) {
   for (const c of candidates) if (row[c] !== undefined && row[c] !== '') return String(row[c]).trim();
@@ -119,7 +121,8 @@ exports.uploadLeadsAndBroadcast = async (req, res) => {
     const bulkOps = toSend.map((r) => ({
       updateOne: {
         filter: { tenantId: tenant._id, phone: r.phone },
-        update: { $set: { name: r.customerName, lastBroadcastAt: now }, $setOnInsert: { tenantId: tenant._id, phone: r.phone, status: 'BROADCAST_SENT' } },
+        // Delivery fields are cleared until the worker sends this broadcast (the dashboard shows "queued").
+        update: { $set: { name: r.customerName, lastBroadcastAt: now, lastBroadcastMessageId: null, broadcastStatus: null, broadcastStatusAt: null, broadcastError: null }, $setOnInsert: { tenantId: tenant._id, phone: r.phone, status: 'BROADCAST_SENT' } },
         upsert: true,
       },
     }));
@@ -146,8 +149,41 @@ exports.uploadLeadsAndBroadcast = async (req, res) => {
 exports.getLeadsByTenant = async (req, res) => {
   try {
     const { tenantId } = req.params;
-    const leads = await Lead.find({ tenantId }).sort({ updatedAt: -1 });
-    return res.json({ success: true, count: leads.length, data: leads });
+    // ?page=1&limit=100 (max 500), optional ?status=QUALIFIED
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 100, 1), 500);
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1);
+    const filter = { tenantId };
+    if (req.query.status && LEAD_STATUSES.includes(req.query.status)) filter.status = req.query.status;
+
+    const [total, leads] = await Promise.all([
+      Lead.countDocuments(filter),
+      Lead.find(filter).sort({ updatedAt: -1 }).skip((page - 1) * limit).limit(limit).lean(),
+    ]);
+    return res.json({ success: true, count: leads.length, total, page, limit, pages: Math.max(Math.ceil(total / limit), 1), data: leads });
+  } catch (error) {
+    return res.status(500).json({ success: false, error: error.message });
+  }
+};
+
+/** Numbers for the dashboard Overview: funnel, delivery, upcoming visits. */
+exports.getLeadStats = async (req, res) => {
+  try {
+    const tenantId = new mongoose.Types.ObjectId(req.params.tenantId);
+    const now = new Date();
+    const dayAgo = new Date(Date.now() - 24 * 60 * 60 * 1000);
+    const [byStatus, byDelivery, upcoming, newToday, unread, needsReply] = await Promise.all([
+      Lead.aggregate([{ $match: { tenantId } }, { $group: { _id: '$status', n: { $sum: 1 } } }]),
+      Lead.aggregate([{ $match: { tenantId, broadcastStatus: { $ne: null } } }, { $group: { _id: '$broadcastStatus', n: { $sum: 1 } } }]),
+      Lead.find({ tenantId, visitAt: { $gte: now }, status: 'VISIT_CONFIRMED' }).sort({ visitAt: 1 }).limit(8).select('name phone configuration budget visitAt visitSlot').lean(),
+      Lead.countDocuments({ tenantId, createdAt: { $gte: dayAgo } }),
+      Lead.countDocuments({ tenantId, unreadCount: { $gt: 0 } }),
+      Lead.countDocuments({ tenantId, botPaused: true, lastMessageDirection: 'in' }),
+    ]);
+    const toMap = (rows) => Object.fromEntries(rows.map((r) => [r._id, r.n]));
+    const status = Object.fromEntries(LEAD_STATUSES.map((s) => [s, 0]));
+    Object.assign(status, toMap(byStatus));
+    const total = Object.values(status).reduce((a, b) => a + b, 0);
+    return res.json({ success: true, data: { total, status, delivery: { SENT: 0, DELIVERED: 0, READ: 0, FAILED: 0, ...toMap(byDelivery) }, upcomingVisits: upcoming, newToday, unreadChats: unread, needsReply } });
   } catch (error) {
     return res.status(500).json({ success: false, error: error.message });
   }

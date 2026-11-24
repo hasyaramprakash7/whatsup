@@ -1,2 +1,2 @@
 const rateLimit = require('express-rate-limit');
-module.exports = rateLimit({ windowMs: 60 * 1000, max: 120, standardHeaders: true, legacyHeaders: false, message: { success: false, error: 'Too many requests, please slow down.' } });
+module.exports = rateLimit({ windowMs: 60 * 1000, max: Number(process.env.RATE_LIMIT_PER_MIN) || 300, standardHeaders: true, legacyHeaders: false, message: { success: false, error: 'Too many requests, please slow down.' } });

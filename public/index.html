@@ -2,112 +2,74 @@
 <html lang="en">
 <head>
   <meta charset="UTF-8" />
-  <title>WhatsApp Real Estate Engine</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <link rel="stylesheet" href="styles.css" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
+  <title>Estate Connect · WhatsApp Lead Desk</title>
+  <meta name="theme-color" content="#0b1220" />
+  <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='9' fill='%2310b981'/%3E%3Cpath d='M9 22V13l7-5 7 5v9h-5v-5h-4v5z' fill='white'/%3E%3C/svg%3E" />
+  <link rel="stylesheet" href="/styles.css" />
 </head>
 <body>
-  <header>
-    <h1>🏢 WhatsApp Real Estate Engine</h1>
-    <span id="health" class="badge">checking...</span>
-    <span id="whoami" class="badge"></span>
-    <button id="logout" class="btn-secondary" hidden>Log out</button>
-  </header>
-
-  <!-- LOGIN -->
-  <section id="login-card" class="card login-card" hidden>
-    <h2>Sign in</h2>
-    <form id="login-form">
-      <label>API Key <input id="api-key" type="password" autocomplete="current-password" required placeholder="Admin key or client key (wre_...)" /></label>
-      <button type="submit" class="btn-primary">Sign in</button>
-      <p id="login-msg" class="msg"></p>
-    </form>
-  </section>
-
-  <main id="app" hidden>
-    <!-- 1. ONBOARD TENANT -->
-    <section class="card admin-only">
-      <h2>1. Onboard a Tenant</h2>
-      <form id="tenant-form">
-        <div class="grid">
-          <label>Business Name <input name="businessName" required value="Aparna Constructions" /></label>
-          <label>Phone Number ID <input name="phoneNumberId" required value="100234567890123" /></label>
-          <label>WABA ID <input name="wabaId" required value="900234567890123" /></label>
-          <label>Access Token <input name="accessToken" required placeholder="EAAxxx..." /></label>
-          <label>Admin Notification Phone <input name="adminNotificationPhone" required value="919876543210" /></label>
-          <label>Project Name <input name="projectName" required value="Aparna CyberHeights" /></label>
-          <label>Latitude <input name="latitude" type="number" step="any" required value="17.4435" /></label>
-          <label>Longitude <input name="longitude" type="number" step="any" required value="78.3772" /></label>
-          <label>Tier (0–3) <input name="tier" type="number" min="0" max="3" value="0" /></label>
-          <label class="span-2">Site Address <input name="siteAddress" required value="Financial District, Nanakramguda, Hyderabad" /></label>
-          <label class="span-2 file-input-label">Brochure PDF (Uploads to Cloudflare R2 on save)
-            <input type="file" id="brochure-file" accept="application/pdf" />
-          </label>
+  <!-- Sign in -->
+  <div id="login" class="login" hidden>
+    <aside class="login-hero">
+      <div class="logo"><span class="logo-mark" data-icon="home"></span><span>Estate Connect<small>WhatsApp Lead Desk</small></span></div>
+      <div>
+        <h1>Every buyer conversation, live in one place.</h1>
+        <p>Broadcast your projects, let the bot qualify buyers, and step in yourself the moment a hot lead replies.</p>
+        <div class="hero-features">
+          <div class="hero-feature"><span class="dot" data-icon="chat"></span><div><strong>Live inbox</strong>See every WhatsApp chat the second it arrives and reply yourself.</div></div>
+          <div class="hero-feature"><span class="dot" data-icon="bot"></span><div><strong>Bot Studio</strong>Write your own questions, prices, visit slots and replies.</div></div>
+          <div class="hero-feature"><span class="dot" data-icon="pin"></span><div><strong>Your project, your brochure</strong>Update location and brochure any time — buyers get the latest.</div></div>
         </div>
-        <button type="submit" class="btn-primary">Create Tenant</button>
-        <p id="tenant-msg" class="msg"></p>
-      </form>
-    </section>
-
-    <!-- 2. ACTIVE TENANTS -->
-    <section class="card">
-      <div class="card-header">
-        <h2>2. Active Tenants</h2>
-        <button id="refresh-tenants" class="btn-secondary">Refresh</button>
       </div>
-      <div id="tenants" class="list">
-        <em>Loading tenants...</em>
+      <small style="color:#64748b">Secured with your private API key</small>
+    </aside>
+    <main class="login-panel">
+      <div class="login-card">
+        <h2>Welcome back</h2>
+        <p class="muted">Sign in with the API key you received from your administrator.</p>
+        <form id="login-form">
+          <label class="field"><span>API key</span>
+            <input id="api-key" class="input" type="password" autocomplete="current-password" required placeholder="wre_… or admin key" />
+          </label>
+          <button type="submit" class="btn primary" style="height:42px">Sign in</button>
+          <p id="login-error" class="form-error" role="alert"></p>
+        </form>
       </div>
-    </section>
+    </main>
+  </div>
 
-    <!-- 3. UPLOAD CSV & BROADCAST -->
-    <section class="card">
-      <h2>3. Upload CSV & Broadcast</h2>
-      <form id="upload-form">
-        <div class="grid">
-          <label>Select Tenant
-            <select id="tenant-select" required></select>
-          </label>
-          <label>CSV File (columns: phone, name)
-            <input type="file" id="csv-file" accept=".csv" required />
-          </label>
+  <!-- App -->
+  <div id="shell" class="shell" hidden>
+    <aside class="sidebar" id="sidebar">
+      <div class="logo"><span class="logo-mark" data-icon="home"></span><span>Estate Connect<small>WhatsApp Lead Desk</small></span></div>
+      <nav class="nav" id="nav"></nav>
+      <div class="sidebar-foot">
+        <div class="me">
+          <span class="avatar" id="me-avatar"></span>
+          <div style="min-width:0"><strong id="me-name"></strong><small id="me-role"></small></div>
+          <button class="btn icon sm ghost" id="logout" title="Sign out" aria-label="Sign out" data-icon="logout"></button>
         </div>
-        <button type="submit" class="btn-primary">Upload & Broadcast</button>
-        <p id="upload-msg" class="msg"></p>
-      </form>
-    </section>
+      </div>
+    </aside>
+    <div class="main">
+      <header class="topbar">
+        <button class="btn icon ghost menu-btn" id="menu-btn" aria-label="Open menu" data-icon="menu"></button>
+        <h1 id="page-title">Overview</h1>
+        <span class="spacer"></span>
+        <div class="tenant-switch" id="tenant-switch" hidden>
+          <select id="tenant-select" aria-label="Client"></select>
+        </div>
+        <span class="live" id="live" title="Live updates"><span>Connecting…</span></span>
+        <button class="btn icon ghost" id="theme-btn" title="Switch theme" aria-label="Switch theme" data-icon="moon"></button>
+      </header>
+      <section class="page" id="page"></section>
+    </div>
+  </div>
 
-    <!-- 4. QUEUE STATUS -->
-    <section class="card admin-only">
-      <div class="card-header">
-        <h2>4. Broadcast Queue Status</h2>
-        <button id="refresh-stats" class="btn-secondary">Refresh Stats</button>
-      </div>
-      <div id="queue-stats" class="list stats-grid">
-        <em>Click refresh to load queue metrics.</em>
-      </div>
-    </section>
+  <div class="toasts" id="toasts" aria-live="polite"></div>
 
-    <!-- 5. LEADS -->
-    <section class="card">
-      <h2>5. Live Leads</h2>
-      <div id="leads" class="list table-container">
-        Select a tenant above to view leads.
-      </div>
-    </section>
-
-    <!-- 6. SYSTEM LOGS -->
-    <section class="card log-card">
-      <div class="card-header">
-        <h2>🖥️ System Execution Logs (Saved)</h2>
-        <button id="clear-logs" class="btn-secondary">Clear Logs</button>
-      </div>
-      <div id="log-console" class="console">
-        <!-- Logs will be injected here by JS -->
-      </div>
-    </section>
-  </main>
-
+  <script src="/socket.io/socket.io.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
