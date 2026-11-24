@@ -337,21 +337,50 @@
       const k = await api('GET', '/push/key');
       state.push.serverReady = !!k.enabled; state.push.key = k.publicKey;
     } catch { state.push.serverReady = false; }
-    if (state.push.supported && state.push.serverReady && Notification.permission === 'granted' && store.get(PUSH_ON_KEY) === '1') {
-      try {
-        let sub = await currentSubscription();
-        if (!sub) sub = await (await navigator.serviceWorker.ready).pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(state.push.key) });
-        const res = await api('POST', '/push/subscribe', { subscription: sub.toJSON(), prefs: localPrefs() });
-        state.push.on = true; state.push.endpoint = sub.endpoint; state.push.prefs = res.prefs;
-      } catch { state.push.on = false; }
-    }
-    paintPushState();
+    await syncPush();
     // A gentle one-time nudge after sign-in.
     if (!state.push.on && state.push.supported && state.push.serverReady && Notification.permission !== 'denied' && !store.get('bluxury_push_nudged')) {
       store.set('bluxury_push_nudged', '1');
       setTimeout(() => toast('Get notified instantly', 'Tap to turn on notifications for new messages and bookings.', { kind: 'info', timeout: 12000, onClick: openNotifySheet }), 1500);
     }
   }
+  /**
+   * Runs on every open and every return to the app: makes sure this device is still connected for notifications.
+   * Repairs it silently when the phone/browser dropped or replaced the connection, or the server removed it.
+   */
+  let pushSyncAt = 0; let pushLostWarned = false;
+  async function syncPush() {
+    pushSyncAt = Date.now();
+    const p = state.push;
+    if (!p.supported || !p.serverReady || store.get(PUSH_ON_KEY) !== '1') { paintPushState(); return; }
+    if (Notification.permission !== 'granted') {
+      // Turned off in phone/browser settings since last time.
+      p.on = false; p.lost = true; paintPushState();
+      if (!pushLostWarned) { pushLostWarned = true; toast('Notifications are off on this device', 'They were turned off in your phone settings. Tap to fix.', { kind: 'warn', timeout: 15000, onClick: openNotifySheet }); }
+      return;
+    }
+    p.lost = false;
+    try {
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (sub) {
+        // Server key changed, or the server dropped this device (address expired) → make a fresh connection.
+        const k = sub.options?.applicationServerKey ? new Uint8Array(sub.options.applicationServerKey) : null;
+        const want = keyBytes(p.key);
+        const sameKey = !k || (k.length === want.length && k.every((x, i) => x === want[i]));
+        const known = sameKey && (await api('POST', '/push/status', { endpoint: sub.endpoint }).catch(() => ({ subscribed: true }))).subscribed;
+        if (!sameKey || !known) { await sub.unsubscribe().catch(() => {}); sub = null; }
+      }
+      if (!sub) sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: keyBytes(p.key) });
+      const res = await api('POST', '/push/subscribe', { subscription: sub.toJSON(), prefs: localPrefs() });
+      Object.assign(p, { on: true, endpoint: sub.endpoint, prefs: res.prefs });
+    } catch { p.on = false; }
+    paintPushState();
+  }
+  // Coming back to the app (at most every 10 minutes): re-check the connection.
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible' && state.auth && state.push.key && Date.now() - pushSyncAt > 10 * 60e3) syncPush();
+  });
   async function pushEnable() {
     if (appleDevice() && !isInstalled()) throw new Error('On iPhone and iPad, install the app first (Share → Add to Home Screen), open it from your home screen, then turn notifications on.');
     if (!state.push.supported) throw new Error('This browser does not support notifications. Use Chrome, Edge, Firefox or Safari 16.4+.');
@@ -385,26 +414,93 @@
     const sub = await currentSubscription();
     if (sub) { const res = await api('POST', '/push/subscribe', { subscription: sub.toJSON(), prefs }); state.push.prefs = res.prefs; }
   }
-  /** Phones decide whether a notification pops up at the top; a web app can't switch that on itself. */
-  function popupHelp() {
-    const ua = navigator.userAgent;
+  // ---- "Always get alerts, even when the app is closed": exact steps for each kind of phone ----
+  // Phones (not the app) decide whether a closed app may receive alerts and pop them at the top. Each brand hides it differently.
+  const DEVICES = {
+    iphone: 'iPhone / iPad', samsung: 'Samsung', xiaomi: 'Xiaomi / Redmi / POCO', oppo: 'OPPO / Realme / OnePlus',
+    vivo: 'vivo / iQOO', huawei: 'Huawei / Honor', stock: 'Google Pixel / Motorola / Nokia / other Android', computer: 'Computer (Windows / Mac)',
+  };
+  const PUSH_DEVICE_KEY = 'bluxury_push_device';
+  function guessDevice(model = '') {
+    const ua = navigator.userAgent; const m = `${model} ${ua}`;
+    if (appleDevice()) return 'iphone';
+    if (!/Android/i.test(ua)) return 'computer';
+    if (/\bSM-|Samsung|Galaxy/i.test(m)) return 'samsung';
+    if (/Redmi|POCO|Xiaomi|\bMi \d|\bM\d{4}[A-Z]|\b2[0-4]\d{6}[A-Z]{1,4}\b|\b2[0-4]\d{3}[A-Z0-9]{3,6}\b/i.test(m)) return 'xiaomi';
+    if (/\bCPH\d|\bRMX\d|OnePlus|\b(IN|LE|KB|NE|PH|PJ|GM|HD)\d{4}\b|OPPO|realme/i.test(m)) return 'oppo';
+    if (/vivo|\bV2\d{3}|\bI2\d{3}|iQOO/i.test(m)) return 'vivo';
+    if (/HUAWEI|HONOR|\b[A-Z]{3}-[A-Z]{1,3}\d{1,2}\b/.test(m)) return 'huawei';
+    return 'stock';
+  }
+  /** Detects the phone brand (Chrome on Android shares the model name only when asked). */
+  async function detectDevice() {
+    const saved = store.get(PUSH_DEVICE_KEY); if (saved && DEVICES[saved]) return saved;
+    let model = '';
+    try { if (navigator.userAgentData?.getHighEntropyValues) model = (await navigator.userAgentData.getHighEntropyValues(['model'])).model || ''; } catch { /* not shared */ }
+    return guessDevice(model);
+  }
+  const iosVersion = () => { const m = navigator.userAgent.match(/OS (\d+)_(\d+)/); return m ? Number(m[1]) + Number(m[2]) / 100 : null; };
+  function deviceGuide(dev) {
     const demo = `<div class="demo"><img src="/icon-192.png" alt="" /><div><b>Ravi Kumar</b><span>Hi, is the 2BHK still available?</span></div></div>`;
-    if (/Android/.test(ua)) {
-      const samsung = /SM-|Samsung/i.test(ua);
-      return `<div class="popup-help"><strong class="t">${icon('bell')}Show notifications at the top of the screen</strong>
-        Android plays only a sound for new apps until you allow pop-ups. Do this once:
+    const popup = (alert = 'Default / Alerting', pop = 'Pop on screen') => `<li><b>Pop at the top:</b> tap <b>Send a test notification</b>, pull down the notification bar, <b>long-press</b> the Bluxury notification → <b>⚙ Settings</b> → choose <b>${alert}</b> (not Silent) and turn on <b>${pop}</b>, <b>Lock screen</b> and <b>Sound</b>.</li>`;
+    const lock = '<li><b>Keep it from being closed:</b> open recent apps, long-press (or swipe down on) the <b>Chrome</b> card → tap the <b>🔒 lock</b>. Don’t use “Clear all”, cleaner or booster apps on Chrome.</li>';
+    const chromeNote = '<p class="small muted" style="margin:8px 0 0">The app runs on <b>Chrome</b>, so Chrome must be allowed to work in the background — that’s what lets alerts arrive when the app is closed.</p>';
+    const steps = {
+      iphone: (() => {
+        const v = iosVersion();
+        return `${v && v < 16.4 ? `<div class="banner red">${icon('alert')}<div>This iPhone runs iOS ${String(v).replace('.', '.')}. Notifications need <b>iOS 16.4 or newer</b>: <b>Settings → General → Software Update</b>.</div></div>` : ''}
         <ol>
-          <li>Press <b>Send a test notification</b>, then pull down the notification bar.</li>
-          <li><b>Long-press</b> the Bluxury notification → tap <b>⚙ Settings</b>${samsung ? ' (or <b>Notification settings</b>)' : ''}.</li>
-          <li>${samsung ? 'Set <b>Alert</b> (not Silent) and turn on <b>Pop-up</b> / <b>Show as pop-up</b>.' : 'Choose <b>Default / Alerting</b> (not Silent) and turn on <b>Pop on screen</b>.'}</li>
-          <li>Also allow <b>Lock screen</b> and <b>Badge</b>. If notifications stop when the phone sleeps: <b>Settings → Apps → Bluxury AI → Battery → Unrestricted</b>.</li>
-        </ol>${demo}</div>`;
-    }
-    if (appleDevice()) {
-      return `<div class="popup-help"><strong class="t">${icon('bell')}Show notifications at the top of the screen</strong>
-        <ol><li>iPhone <b>Settings → Notifications → Bluxury AI</b>.</li><li>Turn on <b>Allow Notifications</b>, tick <b>Lock Screen</b>, <b>Notification Centre</b> and <b>Banners</b>.</li><li>Set <b>Banner Style</b> to <b>Persistent</b> to keep them on top until you tap.</li></ol>${demo}</div>`;
-    }
-    return '';
+          <li><b>Use the Home Screen app:</b> in <b>Safari</b>, tap <b>Share</b> → <b>Add to Home Screen</b>. Always open Bluxury AI from that icon (not from Safari), then turn notifications on here.</li>
+          <li><b>Settings → Notifications → Bluxury AI:</b> turn on <b>Allow Notifications</b>, <b>Time Sensitive</b>, <b>Sounds</b>; tick <b>Lock Screen</b>, <b>Notification Centre</b>, <b>Banners</b>; set <b>Banner Style → Persistent</b>.</li>
+          <li><b>Settings → Notifications → Scheduled Summary:</b> keep it <b>off</b> (or leave Bluxury AI out of it) — otherwise alerts are held back and delivered later.</li>
+          <li><b>Focus / Do Not Disturb:</b> Settings → Focus → each focus → <b>Apps → Add Bluxury AI</b> to the allowed list.</li>
+          <li><b>Don’t delete the Home Screen icon</b> — removing it turns notifications off. Closing it from the app switcher is fine.</li>
+        </ol>`;
+      })(),
+      samsung: `<ol>
+          <li><b>Settings → Apps → Chrome → Battery</b> → <b>Unrestricted</b>. Do the same for <b>Bluxury AI</b>.</li>
+          <li><b>Settings → Battery → Background usage limits</b> → turn <b>off</b> “Put unused apps to sleep”, and add <b>Chrome</b> and <b>Bluxury AI</b> to <b>Never sleeping apps</b>.</li>
+          <li><b>Settings → Notifications → App notifications</b> → turn on <b>Chrome</b> and <b>Bluxury AI</b>.</li>
+          ${popup('Alert', 'Pop-up / Show as pop-up')}${lock}</ol>`,
+      xiaomi: `<ol>
+          <li><b>Settings → Apps → Manage apps → Chrome</b> → turn on <b>Autostart</b>.</li>
+          <li>Same screen → <b>Battery saver</b> → <b>No restrictions</b>. Do the same for <b>Bluxury AI</b>.</li>
+          <li>Same screen → <b>Notifications</b> → turn on <b>Show notifications</b>, <b>Floating notifications</b>, <b>Lock screen notifications</b>, <b>Sound</b>.</li>
+          <li><b>Settings → Battery</b> → keep <b>Ultra battery saver</b> off.</li>
+          ${lock}</ol>`,
+      oppo: `<ol>
+          <li><b>Settings → Apps → App management → Chrome → Battery usage</b> → turn on <b>Allow background activity</b>, <b>Allow auto launch</b> (and <b>Allow foreground activity</b>).</li>
+          <li><b>Settings → Battery</b> → keep <b>Power saving</b> / <b>Super power saving</b> off; under <b>More settings</b> turn off <b>Optimise battery use</b> for Chrome.</li>
+          <li><b>Settings → Notifications & status bar → Chrome</b> and <b>Bluxury AI</b> → turn on <b>Banners</b> / <b>Floating notifications</b>, <b>Lock screen</b>, <b>Ring</b>.</li>
+          ${lock}</ol>`,
+      vivo: `<ol>
+          <li><b>Settings → Battery → Background power consumption management → Chrome</b> → <b>Allow</b> (or <b>Don’t restrict</b>).</li>
+          <li><b>Settings → Apps → Autostart</b> (i Manager → App manager → Autostart) → turn on <b>Chrome</b>.</li>
+          <li><b>Settings → Notifications & status bar → Chrome</b> and <b>Bluxury AI</b> → turn on <b>Banners / Floating notifications</b>, <b>Lock screen</b>, <b>Sound</b>.</li>
+          ${lock}</ol>`,
+      huawei: `<div class="banner amber">${icon('info')}<div>Huawei phones made <b>without Google services</b> (most from 2020 on) can’t receive web-app alerts at all. Use your <b>WhatsApp team alert number</b> for bookings and hand-overs on those phones. Honor phones with Google Play work normally.</div></div>
+        <ol>
+          <li><b>Settings → Battery → App launch → Chrome</b> → <b>Manage manually</b> → turn on <b>Auto-launch</b>, <b>Secondary launch</b> and <b>Run in background</b>.</li>
+          <li><b>Settings → Notifications → Chrome</b> → turn on <b>Allow notifications</b>, <b>Banners</b>, <b>Lock screen</b>.</li>
+          ${lock}</ol>`,
+      stock: `<ol>
+          <li><b>Settings → Apps → Chrome → App battery usage</b> (or Battery) → <b>Unrestricted</b>. Do the same for <b>Bluxury AI</b>.</li>
+          <li><b>Settings → Apps → Chrome → Notifications</b> → turn <b>on</b>; do the same for <b>Bluxury AI</b>.</li>
+          ${popup()}
+          <li>Keep <b>Battery Saver</b> off, and allow Bluxury AI in <b>Do Not Disturb → Apps</b> if you use it.</li></ol>`,
+      computer: `<ol>
+          <li>Alerts arrive while the browser is running — even with this tab closed. <b>Chrome / Edge:</b> Settings → System → turn on <b>Continue running background apps when closed</b>.</li>
+          <li><b>Windows:</b> Settings → System → Notifications → turn on <b>Chrome / Edge</b>, and turn off <b>Do not disturb</b>. <b>Mac:</b> System Settings → Notifications → your browser → <b>Allow</b>, style <b>Alerts</b>.</li></ol>`,
+    };
+    return `<div class="popup-help device-guide">
+        <strong class="t">${icon('bell')}Always get alerts — even when the app is closed</strong>
+        <label class="small muted" style="display:flex;align-items:center;gap:8px;margin:2px 0 8px">Your device
+          <select id="dev-pick" class="input" style="flex:1;min-height:36px">${Object.entries(DEVICES).map(([k, v]) => `<option value="${k}" ${k === dev ? 'selected' : ''}>${v}</option>`).join('')}</select></label>
+        <span class="small">Do this once on each phone:</span>
+        ${steps[dev] || steps.stock}
+        ${!['iphone', 'computer'].includes(dev) ? chromeNote : ''}
+        ${dev !== 'computer' ? demo : ''}
+      </div>`;
   }
   function openNotifySheet() {
     $('#shell').classList.remove('nav-open');
@@ -428,8 +524,9 @@
             <strong class="small muted" style="text-transform:uppercase;letter-spacing:.06em">Notify me about</strong>
             ${PUSH_KINDS.map(([k, t, d]) => `<label class="notify-pref"><div class="grow"><strong>${t}</strong><small>${d}</small></div><span class="switch"><input type="checkbox" data-pk="${k}" ${prefs[k] !== false ? 'checked' : ''} /><span class="track"></span></span></label>`).join('')}
           </div>
-          ${p.on ? `<button class="btn" id="push-test">${icon('send')}Send a test notification</button>` : ''}
-          ${popupHelp()}
+          ${p.on ? `<div class="row wrap" style="gap:8px"><button class="btn" id="push-test">${icon('send')}Send a test notification</button><button class="btn primary" id="push-test-closed">${icon('bell')}Test with the app closed</button></div>
+          <div id="push-closed-help"></div>` : ''}
+          <div id="dev-guide">${deviceGuide(state.push.device || guessDevice())}</div>
           <p class="hint">Each phone or computer is turned on separately. ${isAdmin() ? 'As admin you get notifications for every business.' : ''}</p>
         </div>`;
       hydrateIcons(el);
@@ -447,6 +544,21 @@
         const prefs = { ...localPrefs() }; el.querySelectorAll('[data-pk]').forEach((x) => { prefs[x.dataset.pk] = x.checked; });
         try { await savePushPrefs(prefs); } catch (x) { err(x.message); }
       }));
+      const paintGuide = (dev) => {
+        state.push.device = dev; const g = el.querySelector('#dev-guide'); if (!g) return;
+        g.innerHTML = deviceGuide(dev); hydrateIcons(g);
+        g.querySelector('#dev-pick')?.addEventListener('change', (ev) => { store.set(PUSH_DEVICE_KEY, ev.target.value); paintGuide(ev.target.value); });
+      };
+      paintGuide(state.push.device || guessDevice());
+      if (!state.push.device) detectDevice().then((d) => { if (d !== state.push.device) paintGuide(d); });
+      el.querySelector('#push-test-closed')?.addEventListener('click', async (e) => {
+        const b = e.currentTarget; b.disabled = true;
+        try {
+          await api('POST', '/push/test', { endpoint: state.push.endpoint, delay: 30 });
+          el.querySelector('#push-closed-help').innerHTML = `<div class="banner green">${icon('check')}<div><strong>Now close the app completely</strong> (swipe it away from recent apps) and <strong>lock the phone</strong>. In about 30 seconds a test alert should pop up at the top.<br>If it doesn’t arrive, follow the steps for your phone below and try again.</div></div>`;
+          hydrateIcons(el.querySelector('#push-closed-help'));
+        } catch (x) { err(x.message); } finally { setTimeout(() => { b.disabled = false; }, 30000); }
+      });
       el.querySelector('#push-test')?.addEventListener('click', async (e) => {
         const b = e.currentTarget; b.disabled = true;
         try {
@@ -2415,5 +2527,5 @@
   });
   setInterval(() => { if (state.route.page === 'inbox' && state.inbox?.lead && !$('#reply-text')?.value) renderComposer(); }, 60e3);
   if (getKey()) startSession(); else showLogin();
-  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js?v=5', { updateViaCache: 'none' }).then((r) => r.update()).catch(() => {});
+  if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js?v=6', { updateViaCache: 'none' }).then((r) => r.update()).catch(() => {});
 })();

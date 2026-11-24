@@ -3,7 +3,7 @@ import { DurableObject } from 'cloudflare:workers';
 import { getTenant, getLead, updateLeads, tenantAccessToken } from '../lib/db.js';
 import { outboundRecorder } from '../lib/chatlog.js';
 import { WhatsAppClient } from '../lib/whatsapp.js';
-import { notifyTenant } from '../lib/push.js';
+import { notifyTenant, getSubscription, sendPush, deleteSubscription, testPushPayload } from '../lib/push.js';
 
 const MAX_ATTEMPTS = 3;
 
@@ -73,6 +73,29 @@ export class BusinessHub extends DurableObject {
   webSocketMessage() { /* dashboards only listen */ }
   webSocketClose(ws, code) { try { ws.close(code, 'bye'); } catch { /* already closed */ } }
 
+  // ---------- "test with the app closed" (runs in its own hub instance, never a business's) ----------
+  async scheduleTestPush(endpoint, delayMs) {
+    const at = Date.now() + delayMs;
+    await this.ctx.storage.put('testPush', { endpoint, at });
+    const cur = await this.ctx.storage.getAlarm();
+    if (!cur || cur > at) await this.ctx.storage.setAlarm(at);
+    return true;
+  }
+
+  async runTestPush() {
+    const t = await this.ctx.storage.get('testPush');
+    if (!t) return;
+    if (t.at > Date.now() + 500) { await this.ctx.storage.setAlarm(t.at); return; }
+    await this.ctx.storage.delete('testPush');
+    const sub = await getSubscription(this.env, t.endpoint);
+    if (!sub) return;
+    try {
+      const r = await sendPush(this.env, sub, testPushPayload(true), { urgency: 'high' });
+      if (r.gone) await deleteSubscription(this.env, sub.endpoint);
+      console.log(`[Push] closed-app test ${r.ok ? 'delivered' : `failed ${r.status}`}`);
+    } catch (err) { console.warn('[Push] closed-app test failed:', err.message); }
+  }
+
   // ---------- broadcasts ----------
   /** Queues recipients; sending happens in alarm() at the configured rate. */
   async startBroadcast(tenantId, recipients, template) {
@@ -113,6 +136,7 @@ export class BusinessHub extends DurableObject {
   bump(k) { this.sql.exec('INSERT INTO totals (k, n) VALUES (?, 1) ON CONFLICT (k) DO UPDATE SET n = n + 1', k); }
 
   async alarm() {
+    await this.runTestPush();
     const perTick = Math.max(1, Number(this.env.BROADCAST_RATE_PER_SECOND) || 10);
     const due = this.sql.exec('SELECT * FROM outbox WHERE next_at <= ? ORDER BY added_at LIMIT ?', Date.now(), perTick).toArray();
     if (due.length) {

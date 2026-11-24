@@ -75,5 +75,16 @@ self.addEventListener('notificationclick', (e) => {
   })());
 });
 
-// The browser rotated this device's push keys: tell the app to save the new ones next time it opens.
-self.addEventListener('pushsubscriptionchange', () => {});
+// The browser replaced this device's notification address: save the new one right away, so alerts keep coming
+// even if the app is not opened again. (If the browser doesn't say which was the old one, the app fixes it on next open.)
+self.addEventListener('pushsubscriptionchange', (e) => {
+  e.waitUntil((async () => {
+    const old = e.oldSubscription;
+    let sub = e.newSubscription;
+    if (!sub && old?.options?.applicationServerKey) {
+      sub = await self.registration.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: old.options.applicationServerKey });
+    }
+    if (!sub || !old) return;
+    await fetch('/push/renew', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ oldEndpoint: old.endpoint, subscription: sub.toJSON() }) });
+  })().catch(() => {}));
+});

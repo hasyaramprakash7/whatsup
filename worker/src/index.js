@@ -16,7 +16,7 @@ import { aiDecide } from './lib/ai.js';
 import { MEDIA_FILE } from './lib/media.js';
 import { ITEM_FIELDS, cleanDetails, resolveMapPoint } from './lib/itemfields.js';
 import { geocode, reverseGeocode } from './lib/geo.js';
-import { pushConfigured, saveSubscription, deleteSubscription, getSubscription, sendPush, NOTIFY_KINDS } from './lib/push.js';
+import { pushConfigured, saveSubscription, deleteSubscription, getSubscription, sendPush, NOTIFY_KINDS, testPushPayload } from './lib/push.js';
 import { takeAiReply, layoutOf, listCatalog, getItem, insertItem, updateItem, deleteItem, MAX_CATALOG_ITEMS } from './lib/db.js';
 
 export { ConversationDO, BusinessHub };
@@ -98,6 +98,23 @@ app.get('/health', async (c) => {
 });
 
 // ---------------- Meta webhook ----------------
+/**
+ * The phone's background script calls this when the browser silently replaced its notification address
+ * (happens on some phones and after updates). Proof = knowing the old address, which only that device and the push service have.
+ */
+app.post('/push/renew', async (c) => {
+  if (await limited(c.env.AUTH_LIMIT, `renew:${clientIp(c)}`)) return fail(c, 429, 'Too many requests.');
+  const b = await c.req.json().catch(() => ({}));
+  if (!pushConfigured(c.env) || typeof b.oldEndpoint !== 'string' || b.oldEndpoint.length > 1000 || !validSub(b.subscription)) return fail(c, 400, 'Invalid request.');
+  const old = await getSubscription(c.env, b.oldEndpoint);
+  if (!old) return fail(c, 404, 'Unknown device.');
+  const s = b.subscription;
+  await saveSubscription(c.env, { scope: old.scope, endpoint: s.endpoint, p256dh: s.keys.p256dh, auth: s.keys.auth, prefs: old.prefs, userAgent: c.req.header('user-agent') });
+  if (s.endpoint !== old.endpoint) await deleteSubscription(c.env, old.endpoint);
+  console.log('[Push] a device renewed its notification address');
+  return c.json({ success: true });
+});
+
 app.get('/webhook', async (c) => {
   const expected = c.env.WHATSAPP_VERIFY_TOKEN;
   const token = c.req.query('hub.verify_token');
@@ -226,8 +243,14 @@ app.post('/api/push/test', async (c) => {
   const b = await c.req.json().catch(() => ({}));
   const sub = b.endpoint ? await getSubscription(c.env, String(b.endpoint)) : null;
   if (!sub || sub.scope !== pushScope(c.get('auth'))) return fail(c, 404, 'Turn notifications on first.');
+  // "Test with the app closed": the phone gets it a little later, after the app has been closed and the screen locked.
+  const delay = Math.min(60, Math.max(0, Math.round(Number(b.delay) || 0)));
+  if (delay) {
+    await c.env.HUB.get(c.env.HUB.idFromName(`pushtest:${await sha256Hex(sub.endpoint)}`)).scheduleTestPush(sub.endpoint, delay * 1000);
+    return c.json({ success: true, scheduled: true, delay });
+  }
   let r;
-  try { r = await sendPush(c.env, sub, { kind: 'message', title: 'Bluxury WhatsApp AI', body: 'Test message: customer messages will appear like this, at the top of your screen.', url: '/#/inbox/0', tag: 'test', at: Date.now() }, { urgency: 'high' }); } // same path as a real customer message
+  try { r = await sendPush(c.env, sub, testPushPayload(false), { urgency: 'high' }); } // same path as a real customer message
   catch (err) { return fail(c, 502, `Could not reach the notification service: ${err.message}`); }
   if (r.gone) { await deleteSubscription(c.env, sub.endpoint); return fail(c, 410, 'This device turned notifications off. Turn them on again.'); }
   if (!r.ok) return fail(c, 502, `The notification service refused it (${r.status}).`);

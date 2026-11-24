@@ -90,6 +90,13 @@ export async function sendPush(env, sub, payload, { ttl = 86400, urgency = 'high
   return { ok: false, gone: res.status === 404 || res.status === 410, status: res.status, error: text.slice(0, 200) };
 }
 
+/** The test notification (closed = sent by "Test with the app closed"). */
+export const testPushPayload = (closed) => ({
+  kind: 'message', title: 'Bluxury WhatsApp AI',
+  body: closed ? 'It works! Alerts reach this phone even when the app is closed.' : 'Test message: customer messages will appear like this, at the top of your screen.',
+  url: '/#/inbox/0', tag: 'test', at: Date.now(),
+});
+
 // ---------- subscriptions (D1) ----------
 // Same as migrations/0006_push.sql; created on first use so notifications work even before the migration runs.
 let tableReady = null;
