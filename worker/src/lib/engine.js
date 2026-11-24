@@ -42,6 +42,7 @@ export function isAck(message) {
   return ACK_TEXTS.has(raw.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim());
 }
 
+const REASK_AFTER_MS = 15 * 60 * 1000; // repeat a waiting question after an AI answer only if asked longer ago
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 
 export class Conversation {
@@ -63,7 +64,8 @@ export class Conversation {
     const p = this.tenant.profile || {};
     return { business: p.displayName || this.tenant.businessName, name: this.lead?.name || 'there', address: p.address || '', adminPhone: this.tenant.adminNotificationPhone, ...(this.lead?.data || {}), ...extra };
   }
-  t(text, extra) { return fill(text, this.vars(extra)); }
+  // Anything still empty shows as "—" instead of a raw {placeholder}.
+  t(text, extra) { return fill(text, this.vars(extra)).replace(/\{(\w+)\}/g, '—'); }
   msg(key) { return this.t(this.messages[key]); }
 
   async saveLead(opts) {
@@ -92,6 +94,31 @@ export class Conversation {
     return this._catalog;
   }
   async item(id) { return id ? (await this.catalog()).find((x) => x._id === id) || null : null; }
+
+  /**
+   * Lead details for a product the customer picked: the flow's project field (the choice step whose options
+   * link products) and its area field (the location step), so the booking pass and team alert name the project
+   * they actually chose last — not one they looked at days ago.
+   */
+  chosenItemData(it) {
+    const data = {};
+    if (!it) return data;
+    const pickStep = this.flow.steps.find((s) => s.type === 'choice' && s.field && s.options?.some((o) => o.itemId));
+    if (pickStep) data[pickStep.field] = pickStep.options.find((o) => o.itemId === it._id)?.label || it.name;
+    const area = String(it.details?.address || '').trim();
+    const areaStep = this.flow.steps.find((s) => s.type === 'question' && s.input === 'location' && s.field);
+    if (area && areaStep) data[areaStep.field] = area;
+    return data;
+  }
+  /** "Financial District 500032" for the chosen product, else the business address. */
+  siteAddress(it) {
+    return (it && [it.details?.address, it.details?.pincode].filter(Boolean).join(' ')) || this.tenant.profile?.address || '';
+  }
+  async rememberItem(it) {
+    this.state.itemId = it._id;
+    const data = this.chosenItemData(it);
+    if (Object.keys(data).length) await this.saveLead({ mergeData: data });
+  }
 
   /** Sends each item as a photo with its name, price and description (text-only if it has no photo). */
   async sendItems(items, client = this.bot) {
@@ -150,7 +177,7 @@ export class Conversation {
     // and the question above stays tappable, so nothing is repeated (each message costs money).
     if (iid?.startsWith('ITEM_')) {
       const it = await this.item(iid.slice(5));
-      if (it) { this.state.itemId = it._id; await this.sendItem(it); }
+      if (it) { await this.rememberItem(it); await this.sendItem(it); }
       else await this.bot.text(this.phone, 'Sorry, that one is no longer available.').catch(() => {});
       return this.touch();
     }
@@ -206,6 +233,7 @@ export class Conversation {
   // ---------- steps ----------
   /** Sends the question for a step that waits for an answer. */
   async ask(step) {
+    this.state.askedAt = Date.now(); this.state.askedStep = step.id;
     const text = this.t(step.text);
     if (step.type === 'choice') {
       const photo = (await this.item(step.imageItemId))?.imageUrl || null;
@@ -371,7 +399,8 @@ export class Conversation {
   }
 
   async finish(step) {
-    await this.bot.text(this.phone, this.t(step.text));
+    const chosen = await this.item(this.state.itemId);
+    await this.bot.text(this.phone, this.t(step.text, { address: this.siteAddress(chosen) }));
     await this.raiseStatus('CONVERTED');
     this.state.stepId = null;
     this.state.done = true;
@@ -454,7 +483,9 @@ export class Conversation {
       }
       if (d?.action === 'answer') {
         await this.sendAi(d);
-        return this.ask(step);
+        // The question's buttons are still just above: repeat it only if it was asked a while ago.
+        if (this.state.askedStep !== step.id || Date.now() - (this.state.askedAt || 0) > REASK_AFTER_MS) return this.ask(step);
+        return null;
       }
       if (d?.action === 'handoff') return this.handoff(message, d.reply);
     }
@@ -508,15 +539,25 @@ export class Conversation {
     const tpl = this.tenant.templates || {};
     const to = this.tenant.adminNotificationPhone;
     let messageId = null; let error = null;
-    try {
-      const res = tpl.adminAlertName
-        ? await this.admin.template(to, tpl.adminAlertName, [headline, this.lead?.name || 'Customer', `+${this.phone}`, details].map((v) => String(v || '-').replace(/\s+/g, ' ').trim() || '-'), tpl.adminAlertLanguage || 'en')
-        : await this.admin.text(to, text);
-      messageId = res?.messages?.[0]?.id || null;
-    } catch (err) {
-      error = err.text || err.message;
-      console.warn('[Flow] team alert failed:', error);
+    let res = null;
+    if (tpl.adminAlertName) {
+      try {
+        res = await this.admin.template(to, tpl.adminAlertName, [headline, this.lead?.name || 'Customer', `+${this.phone}`, details].map((v) => String(v || '-').replace(/\s+/g, ' ').trim() || '-'), tpl.adminAlertLanguage || 'en');
+      } catch (err) {
+        // Not approved yet / wrong name or language: fall back to a normal message (works while the team
+        // number has messaged the business number in the last 24 hours).
+        error = `Template "${tpl.adminAlertName}": ${err.text || err.message}`;
+        console.warn('[Flow] team alert template failed, sending as a normal message:', error);
+      }
     }
+    if (!res) {
+      try { res = await this.admin.text(to, text); if (error) error = null; } catch (err) {
+        const why = err.text || err.message;
+        error = error ? `${error} · Normal message also failed: ${why}` : why;
+        console.warn('[Flow] team alert failed:', error);
+      }
+    }
+    messageId = res?.messages?.[0]?.id || null;
     await this.saveLead({ set: { adminAlertStatus: error ? 'FAILED' : 'SENT', adminAlertAt: new Date().toISOString(), adminAlertMessageId: messageId, adminAlertError: error } });
   }
 }
