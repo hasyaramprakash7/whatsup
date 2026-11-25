@@ -3176,5 +3176,29 @@
   });
   setInterval(() => { if (state.route.page === 'inbox' && state.inbox?.lead && !$('#reply-text')?.value) renderComposer(); }, 60e3);
   if (getKey()) startSession(); else showLogin();
+
+  // New release while this tab is open: say so with a Reload button (checked every 5 minutes and when the tab comes back).
+  (() => {
+    let first = null; let shown = false;
+    const check = async () => {
+      if (shown || document.visibilityState !== 'visible') return;
+      try {
+        const r = await fetch('/app.js', { method: 'HEAD', cache: 'no-store' });
+        const tag = r.headers.get('etag'); if (!tag) return;
+        if (first === null) { first = tag; return; }
+        if (tag === first) return;
+        shown = true;
+        const bar = document.createElement('div');
+        bar.setAttribute('role', 'status');
+        bar.style.cssText = 'position:fixed;left:50%;bottom:84px;transform:translateX(-50%);z-index:9999;display:flex;gap:12px;align-items:center;padding:10px 14px;border-radius:12px;background:#111827;color:#fff;box-shadow:0 8px 24px rgba(0,0,0,.25);font-size:14px;max-width:92vw';
+        bar.innerHTML = '<span>A new version of the app is ready.</span><button class="btn sm primary" type="button">Reload</button>';
+        bar.querySelector('button').addEventListener('click', () => { if (confirmLeave()) location.reload(); });
+        document.body.appendChild(bar);
+      } catch { /* offline: try later */ }
+    };
+    check();
+    setInterval(check, 5 * 60e3);
+    document.addEventListener('visibilitychange', check);
+  })();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('/sw.js?v=7', { updateViaCache: 'none' }).then((r) => r.update()).catch(() => {});
 })();
