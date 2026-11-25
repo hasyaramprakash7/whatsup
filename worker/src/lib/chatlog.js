@@ -1,4 +1,5 @@
 // Stores every WhatsApp message (customer, bot, AI, team, broadcast) and pushes it to open dashboards.
+import { markReplied } from './campaigns.js';
 import { insertMessage, upsertLead } from './db.js';
 
 const MEDIA_LABELS = { image: '📷 Photo', video: '🎥 Video', audio: '🎤 Voice message', voice: '🎤 Voice message', document: '📄 Document', sticker: '💟 Sticker', location: '📍 Location', contacts: '👤 Contact', reaction: 'Reaction' };
@@ -116,5 +117,8 @@ export async function recordMessage(env, { tenantId, phone, direction, sentBy, t
 export const outboundRecorder = (env, tenantId, sentBy) => (payload, response) =>
   recordMessage(env, { tenantId, phone: payload.to, direction: 'out', sentBy, ...describeOutbound(payload), waMessageId: response?.messages?.[0]?.id || null });
 
-export const recordInbound = (env, tenantId, from, message, profileName) =>
-  recordMessage(env, { tenantId, phone: from, direction: 'in', sentBy: 'customer', ...describeInbound(message), waMessageId: message.id || null, profileName });
+export async function recordInbound(env, tenantId, from, message, profileName) {
+  const out = await recordMessage(env, { tenantId, phone: from, direction: 'in', sentBy: 'customer', ...describeInbound(message), waMessageId: message.id || null, profileName });
+  await markReplied(env, tenantId, from).catch(() => {}); // counts as "replied" for the campaign that messaged them
+  return out;
+}

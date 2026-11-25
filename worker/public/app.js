@@ -1540,6 +1540,272 @@
   // ============================================================
   // Broadcast
   // ============================================================
+  // ---------- Broadcast: daily limit, message (template + blanks + project), campaigns ----------
+  const inr = (n) => `₹${(Math.round((n || 0) * 100) / 100).toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+  const atLabel = (d) => (d ? new Date(d).toLocaleString([], { weekday: 'short', day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) : '');
+  const hourLabel = (h) => (h === 0 || h === 24 ? '12 AM' : h === 12 ? '12 PM' : h < 12 ? `${h} AM` : `${h - 12} PM`);
+  const bcData = { limit: null, reasons: {}, campaigns: [], templates: null, tplError: '', msg: null };
+  let bcTimer = null;
+
+  function drawLimit() {
+    const el = $('#bc-limit'); const L = bcData.limit; if (!el || !L) return;
+    const cap = L.unlimited ? 'Unlimited' : L.limit.toLocaleString('en-IN');
+    const pct = L.unlimited ? 0 : Math.min(100, Math.round((L.used / Math.max(L.limit, 1)) * 100));
+    const meta = L.metaLimit == null ? 'not checked yet' : L.metaLimit === 'unlimited' ? 'Unlimited' : `${Number(L.metaLimit).toLocaleString('en-IN')} a day`;
+    const q = String(L.quality || '').toUpperCase();
+    el.innerHTML = `
+      <div class="stat-chips"><div class="stat-chip"><b>${cap}</b><span>Daily limit${L.mode === 'manual' ? ' (yours)' : ' (Meta)'}</span></div>
+        <div class="stat-chip"><b>${L.used.toLocaleString('en-IN')}</b><span>Used, last 24 h</span></div>
+        <div class="stat-chip"><b>${L.unlimited ? '∞' : L.room.toLocaleString('en-IN')}</b><span>Left right now</span></div></div>
+      ${L.unlimited ? '' : `<div class="bar" title="${pct}% used"><i style="width:${pct}%"></i></div>`}
+      ${!L.unlimited && L.room === 0 && L.freesAt ? `<p class="hint">More room from about <strong>${esc(atLabel(L.freesAt))}</strong> (Meta counts the last 24 hours).</p>` : ''}
+      <p class="hint">Meta's limit for your number: <strong>${esc(meta)}</strong>${q ? ` · quality <span class="pill ${q === 'GREEN' ? 'd-READ' : q === 'YELLOW' ? 'd-QUEUED' : 'd-FAILED'}">${q === 'GREEN' ? 'High' : q === 'YELLOW' ? 'Medium' : q === 'RED' ? 'Low' : esc(q)}</span>` : ''}${L.metaCheckedAt ? ` · checked ${esc(relTime(L.metaCheckedAt))}` : ''}
+        <button type="button" class="btn sm ghost" id="bc-limit-check">${icon('refresh', 'sm')}Check now</button></p>
+      ${L.aboveMeta ? `<div class="banner red">${icon('alert')}<div>Your number (${L.limit.toLocaleString('en-IN')}) is higher than Meta's limit (${esc(meta)}). WhatsApp will refuse the extra messages — use Auto, or a number up to Meta's limit.</div></div>` : ''}
+      ${['YELLOW', 'RED'].includes(q) ? `<div class="banner amber">${icon('alert')}<div>Your number's quality is ${q === 'RED' ? 'low' : 'medium'}. Send only to people who know you, and fewer per day, until it is back to High.</div></div>` : ''}
+      <form class="stack" id="bc-limit-form" style="gap:10px">
+        <div class="row wrap" style="gap:14px">
+          <label class="row" style="gap:6px"><input type="radio" name="mode" value="auto" ${L.mode !== 'manual' ? 'checked' : ''} />Auto — follow Meta (250 → 2,000 → 10,000 … by itself)</label>
+          <label class="row" style="gap:6px"><input type="radio" name="mode" value="manual" ${L.mode === 'manual' ? 'checked' : ''} />My own number</label>
+          <input class="input" type="number" name="manual" min="1" max="1000000" placeholder="e.g. 2000" value="${esc(L.manualLimit ?? '')}" style="width:130px" ${L.mode === 'manual' ? '' : 'hidden'} /></div>
+        <div class="row wrap" style="gap:8px"><span class="muted small">Send only between</span>
+          <select class="input" name="start" style="width:auto">${Array.from({ length: 24 }, (_, h) => `<option value="${h}" ${h === L.startHour ? 'selected' : ''}>${hourLabel(h)}</option>`).join('')}</select>
+          <span class="muted small">and</span>
+          <select class="input" name="end" style="width:auto">${Array.from({ length: 24 }, (_, i) => i + 1).map((h) => `<option value="${h}" ${h === L.endHour ? 'selected' : ''}>${hourLabel(h)}</option>`).join('')}</select>
+          <span class="muted small">(India time — never at night)</span></div>
+        <details><summary class="small">Price per message (for the cost shown before sending)</summary>
+          <div class="row wrap" style="gap:8px;margin-top:8px"><label class="field" style="margin:0"><span>Marketing ₹</span><input class="input" type="number" step="0.01" min="0" name="costM" value="${esc(L.costMarketing)}" style="width:110px" /></label>
+          <label class="field" style="margin:0"><span>Utility ₹</span><input class="input" type="number" step="0.01" min="0" name="costU" value="${esc(L.costUtility)}" style="width:110px" /></label></div>
+          <p class="hint">Your Meta bill: 10 marketing messages cost ₹8.63 (about ₹0.86 each). Check WhatsApp Manager → Insights → Message pricing.</p></details>
+        <div class="row" style="gap:8px"><button class="btn sm primary" type="submit">Save</button><span id="bc-limit-msg" class="small"></span></div>
+      </form>`;
+    hydrateIcons(el);
+    const f = $('#bc-limit-form');
+    f.addEventListener('change', (e) => { if (e.target.name === 'mode') f.manual.hidden = f.mode.value !== 'manual'; });
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const msg = $('#bc-limit-msg'); msg.textContent = 'Saving…'; msg.className = 'small muted';
+      try {
+        const res = await api('PUT', `/tenants/${state.tenantId}/sending`, { limitMode: f.mode.value, manualLimit: f.mode.value === 'manual' ? f.manual.value : null,
+          startHour: Number(f.start.value), endHour: Number(f.end.value), costMarketing: Number(f.costM.value), costUtility: Number(f.costU.value) });
+        bcData.limit = res.limit; drawLimit(); drawSendSummary(); toast('Saved', 'Daily limit and sending hours updated.');
+      } catch (err) { msg.textContent = err.message; msg.className = 'small'; msg.style.color = 'var(--danger)'; }
+    });
+    $('#bc-limit-check').addEventListener('click', async (e) => {
+      const b = e.currentTarget; b.disabled = true; b.innerHTML = '<span class="spinner"></span>';
+      try { bcData.limit = (await api('POST', `/tenants/${state.tenantId}/sending/refresh`)).limit; drawLimit(); drawSendSummary(); }
+      catch (err) { toast('Could not check', err.message, { kind: 'error' }); b.disabled = false; b.innerHTML = `${icon('refresh', 'sm')}Check now`; hydrateIcons(b.parentElement); }
+    });
+  }
+
+  // The message: template, what fills each blank, the project, a photo, Telugu, when to start.
+  const SRC_LABELS = { name: 'Customer name', business: 'Business name', project: 'Project name', price: 'Project price', column: 'A CSV column…', text: 'Fixed text…' };
+  const tplKey = (t) => `${t.name}|${t.language}`;
+  function defaultParams(t) {
+    const out = {};
+    t.vars.forEach((k, i) => {
+      const n = k.toLowerCase();
+      out[k] = /name|customer/.test(n) && !/business|project/.test(n) ? { src: 'name' } : /business|company/.test(n) ? { src: 'business' } : /project|property/.test(n) ? { src: 'project' }
+        : /price|cost/.test(n) ? { src: 'price' } : t.vars.length <= 2 ? { src: i === 0 ? 'name' : 'business' } : { src: 'text', arg: '' };
+    });
+    return out;
+  }
+  async function loadTemplates() {
+    if (bcData.templates) return;
+    try {
+      const res = await api('GET', `/campaigns/${state.tenantId}/templates`);
+      bcData.templates = res.data; bcData.tplError = '';
+      const first = res.data.find((t) => t.name === res.defaultName && !t.unsupported) || res.data.find((t) => !t.unsupported);
+      if (!bcData.msg && first) bcData.msg = { key: tplKey(first), params: defaultParams(first), itemId: '', image: 'project', imageUrl: '', telugu: false, when: 'now', startAt: '', name: '' };
+    } catch (err) { bcData.templates = []; bcData.tplError = err.message; }
+  }
+  const currentTpl = () => (bcData.templates || []).find((t) => tplKey(t) === bcData.msg?.key) || null;
+  const projectOf = (id) => (state.catalogAll || []).find((x) => x._id === id) || null;
+  function previewValues(t, m, sample) {
+    const it = projectOf(m.itemId); const biz = state.tenant.profile?.displayName || state.tenant.businessName;
+    return t.vars.map((k) => {
+      const p = m.params[k] || {};
+      const v = p.src === 'name' ? (sample?.name || 'there') : p.src === 'business' ? biz : p.src === 'project' ? (it?.name || '[project]') : p.src === 'price' ? (it?.price || '[price]')
+        : p.src === 'column' ? `[${p.arg || 'column'}]` : p.src === 'text' ? (p.arg || '[text]') : '';
+      return { key: k, text: v };
+    });
+  }
+  function drawMsg() {
+    const el = $('#bc-msg'); if (!el) return;
+    if (bcData.templates === null) { el.innerHTML = '<div class="skeleton" style="height:120px"></div>'; return; }
+    if (bcData.tplError) { el.innerHTML = `<div class="banner red">${icon('alert')}<div>${esc(bcData.tplError)}</div></div>`; hydrateIcons(el); return; }
+    if (!bcData.templates.length) { el.innerHTML = `<div class="banner amber">${icon('info')}<div>No approved templates yet. Create one in WhatsApp Manager → Message templates; it shows here once Meta approves it.</div></div>`; hydrateIcons(el); return; }
+    const m = bcData.msg; const t = currentTpl();
+    const cols = bc?.summary?.columns || [];
+    const items = (state.catalogAll || []).filter((x) => x.active);
+    const hasTe = t && bcData.templates.some((x) => x.name === t.name && x.language === 'te' && t.language !== 'te');
+    const sample = [...(bc?.sel || [])].map((p) => bc.contacts?.find((x) => x.phone === p)).find(Boolean);
+    const preview = t ? t.body.replace(/\{\{\s*([A-Za-z0-9_]+)\s*\}\}/g, (x, k) => previewValues(t, m, sample).find((v) => v.key === k)?.text ?? x) : '';
+    el.innerHTML = `
+      <label class="field" style="margin:0"><span>Template (approved by Meta)</span><select class="input" id="bc-tpl">${bcData.templates.map((x) => `<option value="${esc(tplKey(x))}" ${tplKey(x) === m.key ? 'selected' : ''} ${x.unsupported ? 'disabled' : ''}>${esc(x.name)} · ${esc(x.language)} · ${esc(String(x.category || '').toLowerCase())}${x.unsupported ? ` — has ${esc(x.unsupported)}` : ''}</option>`).join('')}</select></label>
+      <label class="field" style="margin:0"><span>Project / product this message is about</span><select class="input" id="bc-item"><option value="">None — replies start the normal flow</option>${items.map((x) => `<option value="${esc(x._id)}" ${x._id === m.itemId ? 'selected' : ''}>${esc(x.name)}${x.price ? ` · ${esc(x.price)}` : ''}</option>`).join('')}</select>
+        <span class="hint">With a project, a reply ("Hi", "Price?", a voice note) gets its photo and goes straight to booking the site visit.</span></label>
+      ${t?.header?.format === 'IMAGE' ? `<div class="stack" style="gap:6px"><strong class="small">Photo at the top</strong><div class="row wrap" style="gap:12px">
+        <label class="row" style="gap:6px"><input type="radio" name="bc-img" value="project" ${m.image === 'project' ? 'checked' : ''} />The project's photo</label>
+        <label class="row" style="gap:6px"><input type="radio" name="bc-img" value="url" ${m.image === 'url' ? 'checked' : ''} />A photo link</label>
+        ${m.image === 'url' ? `<input class="input grow" id="bc-img-url" placeholder="https://…jpg" value="${esc(m.imageUrl)}" />` : ''}</div></div>` : ''}
+      ${t?.vars.length ? `<div class="stack" style="gap:6px"><strong class="small">Fill the blanks</strong>${t.vars.map((k) => { const p = m.params[k] || {}; return `<div class="row wrap" style="gap:8px;align-items:center">
+        <code style="min-width:54px">{{${esc(k)}}}</code>
+        <select class="input" data-src="${esc(k)}" style="width:auto">${Object.entries(SRC_LABELS).map(([v, l]) => `<option value="${v}" ${p.src === v ? 'selected' : ''}>${l}</option>`).join('')}</select>
+        ${p.src === 'column' ? (cols.length ? `<select class="input" data-arg="${esc(k)}" style="width:auto"><option value="">Choose a column</option>${cols.map((c2) => `<option ${c2 === p.arg ? 'selected' : ''}>${esc(c2)}</option>`).join('')}</select>` : '<span class="hint">Import a CSV first — its columns show here.</span>') : ''}
+        ${p.src === 'text' ? `<input class="input grow" data-arg="${esc(k)}" maxlength="200" placeholder="Text for everyone" value="${esc(p.arg || '')}" />` : ''}</div>`; }).join('')}</div>` : ''}
+      ${t ? `<div class="stack" style="gap:4px"><strong class="small">Preview${sample ? ` (for ${esc(sample.name || '+' + sample.phone)})` : ''}</strong><div class="wa-bubble" style="background:var(--surface-2);border:1px solid var(--border);border-radius:12px;padding:10px 12px;white-space:pre-wrap">${wa(preview)}</div>
+        ${t.buttons?.length ? `<div class="row wrap" style="gap:6px">${t.buttons.map((b) => `<span class="pill plain">${esc(b.text)}</span>`).join('')}</div>` : ''}</div>` : ''}
+      ${hasTe ? `<label class="row" style="gap:6px"><input type="checkbox" id="bc-te" ${m.telugu ? 'checked' : ''} />Telugu customers get the Telugu version of this template</label>` : ''}
+      <div class="row wrap" style="gap:12px;align-items:center"><strong class="small">Start</strong>
+        <label class="row" style="gap:6px"><input type="radio" name="bc-when" value="now" ${m.when !== 'later' ? 'checked' : ''} />Now</label>
+        <label class="row" style="gap:6px"><input type="radio" name="bc-when" value="later" ${m.when === 'later' ? 'checked' : ''} />Later</label>
+        ${m.when === 'later' ? `<input class="input" type="datetime-local" id="bc-start" value="${esc(m.startAt)}" style="width:auto" />` : ''}</div>
+      <label class="field" style="margin:0"><span>Campaign name <span class="muted">(optional)</span></span><input class="input" id="bc-name" maxlength="80" placeholder="e.g. Skyline weekend offer" value="${esc(m.name)}" /></label>`;
+    hydrateIcons(el);
+  }
+  function wireMsg() {
+    const el = $('#bc-msg'); if (!el || el.dataset.wired) return; el.dataset.wired = '1';
+    const redraw = () => { drawMsg(); drawSendSummary(); };
+    el.addEventListener('change', (e) => {
+      const m = bcData.msg; const x = e.target; if (!m) return;
+      if (x.id === 'bc-tpl') { m.key = x.value; const t = currentTpl(); if (t) m.params = defaultParams(t); m.telugu = false; return redraw(); }
+      if (x.id === 'bc-item') { m.itemId = x.value; return redraw(); }
+      if (x.name === 'bc-img') { m.image = x.value; return redraw(); }
+      if (x.name === 'bc-when') { m.when = x.value; return redraw(); }
+      if (x.id === 'bc-te') { m.telugu = x.checked; return; }
+      if (x.dataset.src) { m.params[x.dataset.src] = { src: x.value, arg: '' }; return redraw(); }
+      if (x.dataset.arg && x.tagName === 'SELECT') { m.params[x.dataset.arg].arg = x.value; return redraw(); }
+    });
+    el.addEventListener('input', (e) => {
+      const m = bcData.msg; const x = e.target; if (!m) return;
+      if (x.dataset.arg) m.params[x.dataset.arg].arg = x.value;
+      if (x.id === 'bc-img-url') m.imageUrl = x.value.trim();
+      if (x.id === 'bc-start') m.startAt = x.value;
+      if (x.id === 'bc-name') m.name = x.value;
+    });
+    el.addEventListener('focusout', (e) => { if (e.target.dataset?.arg && e.target.tagName === 'INPUT') { drawMsg(); } });
+  }
+  /** The campaign settings for the server, or { error } with what to fix. */
+  function campaignSpec() {
+    const m = bcData.msg; const t = currentTpl();
+    if (!m || !t) return { error: 'Choose a template.' };
+    for (const k of t.vars) {
+      const p = m.params[k];
+      if (!p?.src) return { error: `Choose what goes into {{${k}}}.` };
+      if ((p.src === 'column' || p.src === 'text') && !String(p.arg || '').trim()) return { error: `{{${k}}}: ${p.src === 'column' ? 'choose the CSV column' : 'type the text'}.` };
+      if (['project', 'price'].includes(p.src) && !m.itemId) return { error: `{{${k}}} uses the project: choose the project.` };
+    }
+    let headerImage;
+    if (t.header?.format === 'IMAGE') {
+      if (m.image === 'url') { if (!/^https:\/\/\S{8,}$/.test(m.imageUrl)) return { error: 'Paste a photo link starting with https://' }; headerImage = m.imageUrl; }
+      else { if (!projectOf(m.itemId)?.imageUrl) return { error: 'This template shows a photo: choose a project that has one (or paste a photo link).' }; headerImage = 'project'; }
+    }
+    let startAt;
+    if (m.when === 'later') { const d = new Date(m.startAt); if (!m.startAt || Number.isNaN(d.getTime())) return { error: 'Choose the start date and time.' }; startAt = d.toISOString(); }
+    return { templateName: t.name, templateLang: t.language, params: t.vars.map((k) => ({ key: k, src: m.params[k].src, arg: m.params[k].arg || '' })),
+      itemId: m.itemId || null, headerImage, telugu: !!m.telugu, startAt, name: m.name.trim() };
+  }
+  /** "1,000 people · about ₹860 · about 4 days at 250 a day" under the Send button. */
+  function drawSendSummary() {
+    const el = $('#bc-summary'); if (!el) return;
+    const n = bc?.sel?.size || 0; const L = bcData.limit; const t = currentTpl();
+    if (!n || !L) { el.innerHTML = ''; return; }
+    const each = String(t?.category || 'MARKETING').toUpperCase() === 'MARKETING' ? L.costMarketing : L.costUtility;
+    const days = L.unlimited ? 1 : (n <= L.room ? 1 : (L.room > 0 ? 1 : 0) + Math.ceil((n - L.room) / Math.max(L.limit, 1)));
+    el.innerHTML = `<div class="banner ${days > 1 ? 'amber' : 'green'}">${icon(days > 1 ? 'calendar' : 'check')}<div><strong>${n.toLocaleString('en-IN')} people · about ${inr(n * each)}</strong>${t ? ` (${inr(each)} each, ${esc(String(t.category || '').toLowerCase())})` : ''}<br>
+      ${days > 1 ? `Daily limit ${L.limit.toLocaleString('en-IN')}: <strong>${Math.min(n, L.room).toLocaleString('en-IN')} today</strong>, the rest continue by themselves — about <strong>${days} days</strong>. Keep enough money in Meta for about ${inr(Math.min(n, L.limit) * each)} a day.` : 'All of them today.'}
+      ${L.open ? '' : ` Sending starts at ${hourLabel(L.startHour)} (outside sending hours now).`}</div></div>`;
+    hydrateIcons(el);
+  }
+
+  // Campaign list: live counts, pause / resume / cancel, who got what.
+  const CAMP_STATUS = { sending: ['Sending', 'd-DELIVERED'], waiting_limit: ['Daily limit reached — continues by itself', 'd-QUEUED'], waiting_hours: ['Waiting for sending hours', 'd-QUEUED'],
+    scheduled: ['Scheduled', 'd-QUEUED'], paused: ['Paused', 'd-FAILED'], done: ['Finished', 'd-READ'], cancelled: ['Cancelled', 'plain'] };
+  function campaignHtml(c) {
+    const s = c.stats; const [label, cls] = CAMP_STATUS[c.status] || [c.status, 'plain'];
+    const fails = s.failed + s.invalid + s.capped;
+    const finished = s.accepted + fails + s.skipped + s.cancelled;
+    const pct = s.total ? Math.round((finished / s.total) * 100) : 0;
+    const L = bcData.limit;
+    const when = c.status === 'scheduled' ? ` · ${esc(atLabel(c.startAt))}` : c.status === 'waiting_limit' && L?.freesAt ? ` · next from ${esc(atLabel(L.freesAt))}` : c.status === 'waiting_hours' && L?.nextOpenAt ? ` · ${esc(atLabel(L.nextOpenAt))}` : '';
+    const live = ['sending', 'waiting_limit', 'waiting_hours', 'scheduled'].includes(c.status);
+    return `<div class="stack" style="gap:8px;padding:12px;border:1px solid var(--border);border-radius:12px" data-camp="${esc(c._id)}">
+      <div class="row wrap" style="gap:8px"><strong class="grow">${esc(c.name)}</strong><span class="pill ${cls}">${esc(label)}${when}</span></div>
+      <div class="hint">${esc(c.templateName)} · ${esc(c.templateLang)}${c.itemId && projectOf(c.itemId) ? ` · ${esc(projectOf(c.itemId).name)}` : ''} · started ${esc(relTime(c.createdAt))}</div>
+      ${c.status === 'paused' && c.pausedReason ? `<div class="banner ${c.pausedReason === 'user' ? 'amber' : 'red'}">${icon('alert')}<div>${esc(bcData.reasons[c.pausedReason] || c.pausedReason)}</div></div>` : ''}
+      <div class="bar"><i style="width:${pct}%"></i></div>
+      <div class="stat-chips">${[['Sent', s.accepted], ['Delivered', s.delivered + s.read], ['Read', s.read], ['Replied', s.replied], ['Visits booked', s.booked], ['Waiting', s.waiting], ['Failed', fails], ['Skipped', s.skipped]]
+        .filter(([k, v]) => v || ['Sent', 'Waiting'].includes(k)).map(([k, v]) => `<div class="stat-chip"><b>${(v || 0).toLocaleString('en-IN')}</b><span>${k}</span></div>`).join('')}</div>
+      <div class="row wrap" style="gap:8px"><span class="muted small">${s.total.toLocaleString('en-IN')} people · cost so far about ${inr(c.costSoFar)}</span><span class="spacer"></span>
+        <button class="btn sm" data-cpeople="${esc(c._id)}">${icon('users', 'sm')}People</button>
+        ${live ? `<button class="btn sm" data-cact="pause" data-cid="${esc(c._id)}">Pause</button>` : ''}
+        ${c.status === 'paused' ? `<button class="btn sm primary" data-cact="resume" data-cid="${esc(c._id)}">Resume</button>` : ''}
+        ${live || c.status === 'paused' ? `<button class="btn sm ghost" data-cact="cancel" data-cid="${esc(c._id)}">Cancel</button>` : ''}</div></div>`;
+  }
+  function drawCampaigns() {
+    const el = $('#bc-campaigns'); if (!el) return;
+    el.innerHTML = bcData.campaigns.length ? bcData.campaigns.map(campaignHtml).join('')
+      : `<div class="empty" style="padding:20px 8px"><span class="section-icon indigo">${icon('megaphone', 'lg')}</span><h3>No campaigns yet</h3><p>Your broadcasts show here with live delivered, read and replied counts.</p></div>`;
+    hydrateIcons(el);
+  }
+  async function loadCampaigns() {
+    if (!$('#bc-campaigns')) return;
+    try {
+      const res = await api('GET', `/campaigns/${state.tenantId}`);
+      bcData.campaigns = res.data; bcData.limit = res.limit; bcData.reasons = res.reasons || {};
+      drawCampaigns();
+      if (!$('#bc-limit-form') || !document.activeElement?.closest?.('#bc-limit')) drawLimit();
+      drawSendSummary();
+    } catch (err) { const el = $('#bc-campaigns'); if (el) el.innerHTML = `<p class="muted">${esc(err.message)}</p>`; }
+  }
+  function wireCampaigns() {
+    const el = $('#bc-campaigns'); if (!el) return;
+    el.addEventListener('click', async (e) => {
+      const b = e.target.closest('button'); if (!b) return;
+      if (b.dataset.cpeople) return showCampaignPeople(bcData.campaigns.find((c) => c._id === b.dataset.cpeople));
+      if (!b.dataset.cact) return;
+      if (b.dataset.cact === 'cancel' && !confirm('Cancel this campaign? People who have not got it yet will not get it.')) return;
+      b.disabled = true;
+      try { await api('POST', `/campaigns/${state.tenantId}/${b.dataset.cid}/${b.dataset.cact}`); await loadCampaigns(); }
+      catch (err) { toast('Could not update', err.message, { kind: 'error' }); b.disabled = false; }
+    });
+    clearInterval(bcTimer);
+    bcTimer = setInterval(() => {
+      if (state.route.page !== 'broadcast' || !$('#bc-campaigns')) { clearInterval(bcTimer); return; }
+      if (document.visibilityState === 'visible') loadCampaigns();
+    }, 15000);
+  }
+  const RECIPIENT_STATUS = { waiting: ['Waiting', 'd-QUEUED'], sent: ['Sent', 'd-DELIVERED'], delivered: ['Delivered', 'd-DELIVERED'], read: ['Read', 'd-READ'], failed: ['Failed', 'd-FAILED'],
+    capped: ['Held by WhatsApp', 'd-FAILED'], invalid: ['Not on WhatsApp', 'd-FAILED'], skipped: ['Skipped', 'plain'], cancelled: ['Cancelled', 'plain'] };
+  function showCampaignPeople(c) {
+    if (!c) return;
+    let filter = '';
+    modal(`<div class="card-head"><span class="section-icon">${icon('users')}</span><div><h2>${esc(c.name)}</h2><p>${c.stats.total.toLocaleString('en-IN')} people</p></div></div>
+      <div class="card-body stack"><div class="filters" id="cp-f">${[['', 'All'], ['waiting', 'Waiting'], ['read', 'Read'], ['replied', 'Replied'], ['delivered', 'Delivered'], ['sent', 'Sent'], ['failed', 'Failed'], ['invalid', 'Not on WhatsApp'], ['capped', 'Held'], ['skipped', 'Skipped']]
+        .map(([k, l]) => `<button type="button" class="filter ${k === '' ? 'active' : ''}" data-f="${k}">${l}</button>`).join('')}</div>
+      <div id="cp-list" style="max-height:55vh;overflow:auto"><div class="skeleton" style="height:120px"></div></div></div>
+      <div class="modal-foot"><button class="btn" data-close>Close</button></div>`, { wide: true, onMount: (root) => {
+      const load = async () => {
+        const list = $('#cp-list', root);
+        try {
+          const { data } = await api('GET', `/campaigns/${state.tenantId}/${c._id}/recipients${filter ? `?status=${filter}` : ''}`);
+          list.innerHTML = data.length ? `<table class="table"><thead><tr><th>Contact</th><th>Status</th><th>When</th></tr></thead><tbody>${data.map((r) => {
+            const [l, k] = RECIPIENT_STATUS[r.status] || [r.status, 'plain'];
+            return `<tr><td><strong>${esc(r.name || '—')}</strong><div class="hint">+${esc(r.phone)}</div></td><td><span class="pill ${k}" ${r.error ? `title="${esc(r.error)}"` : ''}>${esc(l)}</span>${r.repliedAt ? ' <span class="pill d-READ">Replied</span>' : ''}${r.error && r.status !== 'read' ? `<div class="hint">${esc(r.error)}</div>` : ''}</td>
+              <td class="small">${r.sentAt ? esc(atLabel(r.sentAt)) : r.nextAt ? `after ${esc(atLabel(r.nextAt))}` : '—'}</td></tr>`;
+          }).join('')}</tbody></table>${data.length >= 100 ? '<p class="hint">Showing the first 100.</p>' : ''}` : '<p class="hint" style="padding:12px">Nobody here.</p>';
+        } catch (err) { list.innerHTML = `<p class="muted">${esc(err.message)}</p>`; }
+      };
+      $('#cp-f', root).addEventListener('click', (e) => {
+        const b = e.target.closest('[data-f]'); if (!b) return;
+        filter = b.dataset.f; $$('#cp-f .filter', root).forEach((x) => x.classList.toggle('active', x === b)); load();
+      });
+      load();
+    } });
+  }
+  let bc = null;
+
   function renderBroadcast() {
     const t = state.tenant; const tp = t.templates || {};
     $('#page').innerHTML = `<div class="page-inner">
@@ -1559,14 +1825,10 @@
               <label class="dropzone" id="csv-drop"><input type="file" id="csv-file" accept=".csv,text/csv" />
                 <span class="section-icon">${icon('upload', 'lg')}</span><strong>Drop your CSV here or click to choose</strong><span class="hint">10-digit Indian numbers get +91 automatically · you choose who gets it before sending</span></label>
               <div id="csv-picked"></div></div></div>
-          <div class="card card-pad stack"><div class="row"><span class="section-icon indigo">${icon('template')}</span><div><h2>Template</h2><p class="muted small">Change it in <a href="#/settings">Settings</a></p></div></div>
-            <dl class="kv"><dt>Name</dt><dd><code>${esc(tp.broadcastName || 'Server default')}</code></dd><dt>Language</dt><dd>${esc(tp.broadcastLanguage || 'Server default')}</dd>
-            <dt>Variables</dt><dd>${tp.broadcastName && tp.broadcastHasParams === false ? 'None' : '{{1}} customer name · {{2}} business name'}</dd></dl></div>
-          <div class="card card-pad stack"><div class="row"><span class="section-icon amber">${icon('info')}</span><h2>Good to know</h2></div>
-            <ul style="margin:0;padding-left:18px;color:var(--text-2);display:grid;gap:6px">
-              <li>Daily limit follows your WhatsApp tier (Tier ${t.tier ?? 0}).</li>
-              <li>Customers who opted out are never messaged again.</li>
-              <li>Numbers WhatsApp refuses (e.g. not on your test list) show as Failed with the reason.</li></ul></div>
+          <div class="card"><div class="card-head"><span class="section-icon indigo">${icon('template')}</span><div><h2>Message</h2><p>Your approved WhatsApp template, what fills its blanks, and the project it is about</p></div></div>
+            <div class="card-body stack" id="bc-msg"><div class="skeleton" style="height:120px"></div></div></div>
+          <div class="card"><div class="card-head"><span class="section-icon amber">${icon('activity')}</span><div><h2>Daily sending limit</h2><p>People you can message first in 24 hours. Big lists continue by themselves the next day.</p></div></div>
+            <div class="card-body stack" id="bc-limit"><div class="skeleton" style="height:90px"></div></div></div>
         </div>
         <div class="stack bc-side">
           <div class="card"><div class="card-head"><span class="section-icon">${icon('users')}</span><div><h2>Send list</h2><p>Everyone you added. Untick anyone you don't want to send to.</p></div></div>
@@ -1574,14 +1836,16 @@
               <div id="bc-m-list" class="row wrap" style="gap:6px"></div>
               <div id="bc-empty" class="empty" style="padding:20px 8px"><span class="section-icon indigo">${icon('users', 'lg')}</span><h3>No contacts yet</h3><p>Add a number or import a CSV on the left. They'll show up here.</p></div>
               <div id="csv-contacts"></div>
+              <div id="bc-summary"></div>
               <button class="btn primary" id="send-broadcast" disabled style="height:42px">${icon('send')}Send broadcast</button>
               <div id="broadcast-result"></div></div></div>
-          <div class="card"><div class="card-head"><span class="section-icon blue">${icon('activity')}</span><div><h2>Sending queue</h2><p>Paced to protect your WhatsApp quality rating</p></div><span class="spacer"></span><button class="btn sm" id="q-refresh">${icon('refresh', 'sm')}Refresh</button></div><div class="card-body" id="queue-stats"></div></div>
+          <div class="card"><div class="card-head"><span class="section-icon blue">${icon('megaphone')}</span><div><h2>Campaigns</h2><p>Live: sent, delivered, read, replied and visits booked</p></div><span class="spacer"></span><button class="btn sm" id="q-refresh">${icon('refresh', 'sm')}Refresh</button></div><div class="card-body stack" id="bc-campaigns"><div class="skeleton" style="height:120px"></div></div></div>
         </div></div></div>`;
     let file = null;
+    const blocked = (x) => x.state === 'optedOut' || x.state === 'invalid';
     const manual = []; // [{ name, phone }] typed in by hand
     let previewSeq = 0;
-    const bc = { contacts: null, sel: new Set(), filter: 'all', search: '', summary: null };
+    bc = { contacts: null, sel: new Set(), filter: 'all', search: '', summary: null };
     const hasInput = () => !!file || manual.length > 0;
     const manualField = () => (manual.length ? { manual: JSON.stringify(manual) } : {});
     const toDigits = (p) => { let d = String(p).replace(/\D/g, ''); if (d.length === 10) d = '91' + d; else if (d.length === 11 && d[0] === '0') d = '91' + d.slice(1); return d.length >= 11 && d.length <= 15 ? d : null; };
@@ -1635,10 +1899,10 @@
       try {
         const res = await uploadFile(`/leads/${state.tenantId}/preview`, file, manualField());
         if (seq !== previewSeq) return; // a newer change is loading
-        bc.contacts = res.data; bc.summary = res.summary;
+        bc.contacts = res.data; bc.summary = res.summary; if (res.limit) bcData.limit = res.limit;
         // Keep earlier ticks; anyone new to the list is ticked only if they never got a broadcast.
-        bc.sel = new Set(res.data.filter((x) => x.state !== 'optedOut' && (prevKnown.has(x.phone) ? prevSel.has(x.phone) : x.state === 'new')).map((x) => x.phone));
-        drawContacts();
+        bc.sel = new Set(res.data.filter((x) => !blocked(x) && (prevKnown.has(x.phone) ? prevSel.has(x.phone) : x.state === 'new')).map((x) => x.phone));
+        drawMsg(); drawContacts();
       } catch (err) {
         if (seq !== previewSeq) return;
         bc.contacts = null; $('#csv-contacts').innerHTML = `<div class="banner red">${icon('alert')}<div>${esc(err.message)}</div></div>`; updateSendButton();
@@ -1658,7 +1922,8 @@
       const n = bc.sel.size;
       const empty = $('#bc-empty'); if (empty) empty.hidden = hasInput();
       btn.disabled = !hasInput() || !bc.contacts || !n;
-      btn.innerHTML = `${icon('send')}${bc.contacts ? `Send to ${n.toLocaleString()} selected` : 'Send broadcast'}`;
+      btn.innerHTML = `${icon('send')}${bc.contacts ? `${bcData.msg?.when === 'later' ? 'Schedule for' : 'Send to'} ${n.toLocaleString()} selected` : 'Send broadcast'}`;
+      drawSendSummary();
     };
     const visibleContacts = () => {
       const q = bc.search.toLowerCase(); const qd = q.replace(/\D/g, '');
@@ -1674,19 +1939,18 @@
       const all = bc.contacts; const s = bc.summary || {};
       const count = (st) => all.filter((x) => x.state === st).length;
       const sentCount = count('sent'); const sentPicked = all.filter((x) => x.state === 'sent' && bc.sel.has(x.phone)).length;
-      const vis = visibleContacts(); const pickable = vis.filter((x) => x.state !== 'optedOut');
+      const vis = visibleContacts(); const pickable = vis.filter((x) => !blocked(x));
       const allOn = pickable.length > 0 && pickable.every((x) => bc.sel.has(x.phone));
       const shown = vis.slice(0, 300);
       el.innerHTML = `<div class="bc-picker stack">
         <div class="row wrap" style="gap:8px"><strong>${all.length.toLocaleString()} contacts</strong><span class="muted small">${[s.duplicates ? `${s.duplicates} duplicate rows merged` : '', s.invalid ? `${s.invalid} invalid numbers skipped` : ''].filter(Boolean).join(' · ')}</span></div>
         ${sentCount ? `<div class="banner amber">${icon('info')}<div><strong>${sentCount} already got a broadcast before.</strong> ${sentPicked ? `${sentPicked} of them are selected: they get it again and the bot starts over from the first question for them.` : 'They are not selected, so nobody gets it twice.'} Tick them if you want to send again — WhatsApp may block repeated marketing messages to the same person.</div></div>` : ''}
-        ${bc.sel.size > (s.quotaRemaining ?? Infinity) ? `<div class="banner red">${icon('alert')}<div>You selected ${bc.sel.size.toLocaleString()}, but only <strong>${(s.quotaRemaining || 0).toLocaleString()}</strong> more can be sent in the next 24 hours (Tier ${s.tier ?? 0}).</div></div>` : ''}
-        <div class="row wrap" style="gap:8px"><div class="filters">${[['all', 'All', all.length], ['new', 'New', count('new')], ['sent', 'Already sent', sentCount], ['optedOut', 'Opted out', count('optedOut')]].filter(([k, , n]) => k === 'all' || n).map(([k, l, n]) => `<button type="button" class="filter ${bc.filter === k ? 'active' : ''}" data-bcf="${k}">${l}<span class="n">${n}</span></button>`).join('')}</div>
+        <div class="row wrap" style="gap:8px"><div class="filters">${[['all', 'All', all.length], ['new', 'New', count('new')], ['sent', 'Already sent', sentCount], ['optedOut', 'Opted out', count('optedOut')], ['invalid', 'Not on WhatsApp', count('invalid')]].filter(([k, , n]) => k === 'all' || n).map(([k, l, n]) => `<button type="button" class="filter ${bc.filter === k ? 'active' : ''}" data-bcf="${k}">${l}<span class="n">${n}</span></button>`).join('')}</div>
           <span class="spacer"></span><div class="search" style="width:min(220px,100%)">${icon('search', 'sm')}<input class="input" id="bc-search" placeholder="Search" value="${esc(bc.search)}" /></div></div>
         <div class="bc-list"><table class="table"><thead><tr><th style="width:36px"><input type="checkbox" id="bc-all" ${allOn ? 'checked' : ''} ${pickable.length ? '' : 'disabled'} aria-label="Select all shown" /></th><th>Contact</th><th>Status</th></tr></thead><tbody>
-          ${shown.map((x) => `<tr class="${x.state === 'optedOut' ? 'muted-row' : ''}"><td><input type="checkbox" data-ph="${esc(x.phone)}" ${bc.sel.has(x.phone) ? 'checked' : ''} ${x.state === 'optedOut' ? 'disabled' : ''} aria-label="Select ${esc(x.name || x.phone)}" /></td>
+          ${shown.map((x) => `<tr class="${blocked(x) ? 'muted-row' : ''}"><td><input type="checkbox" data-ph="${esc(x.phone)}" ${bc.sel.has(x.phone) ? 'checked' : ''} ${blocked(x) ? 'disabled' : ''} aria-label="Select ${esc(x.name || x.phone)}" /></td>
             <td><strong>${esc(x.name || '—')}</strong><div class="hint">+${esc(x.phone)}</div></td>
-            <td>${x.state === 'new' ? '<span class="pill d-READ">New</span>' : x.state === 'optedOut' ? '<span class="pill d-FAILED">Opted out · never sent</span>' : sentLabel(x)}</td></tr>`).join('')}
+            <td>${x.state === 'new' ? '<span class="pill d-READ">New</span>' : x.state === 'invalid' ? '<span class="pill d-FAILED">Not on WhatsApp · skipped</span>' : blocked(x) ? '<span class="pill d-FAILED">Opted out · never sent</span>' : sentLabel(x)}</td></tr>`).join('')}
           </tbody></table>${vis.length > shown.length ? `<p class="hint" style="padding:8px 12px">Showing 300 of ${vis.length.toLocaleString()} — search to find others. The top checkbox covers all ${vis.length.toLocaleString()}.</p>` : ''}${vis.length ? '' : '<p class="hint" style="padding:12px">Nothing matches.</p>'}</div>
         <div class="row wrap" style="gap:8px"><span class="muted small"><strong>${bc.sel.size.toLocaleString()}</strong> selected</span><span class="spacer"></span>
           <button type="button" class="btn sm" data-bcq="new">Only new</button><button type="button" class="btn sm" data-bcq="all">Everyone</button><button type="button" class="btn sm" data-bcq="none">Clear</button></div>
@@ -1697,14 +1961,14 @@
     }
     $('#csv-contacts').addEventListener('change', (e) => {
       const t = e.target;
-      if (t.id === 'bc-all') { for (const x of visibleContacts()) if (x.state !== 'optedOut') { if (t.checked) bc.sel.add(x.phone); else bc.sel.delete(x.phone); } drawContacts(); }
+      if (t.id === 'bc-all') { for (const x of visibleContacts()) if (!blocked(x)) { if (t.checked) bc.sel.add(x.phone); else bc.sel.delete(x.phone); } drawContacts(); }
       else if (t.dataset.ph) { if (t.checked) bc.sel.add(t.dataset.ph); else bc.sel.delete(t.dataset.ph); drawContacts(); }
     });
     $('#csv-contacts').addEventListener('click', (e) => {
       const b = e.target.closest('button'); if (!b) return;
       if (b.dataset.bcf) { bc.filter = b.dataset.bcf; drawContacts(); }
       if (b.dataset.bcq) {
-        const ok = (bc.contacts || []).filter((x) => x.state !== 'optedOut');
+        const ok = (bc.contacts || []).filter((x) => !blocked(x));
         bc.sel = new Set(b.dataset.bcq === 'none' ? [] : ok.filter((x) => b.dataset.bcq === 'all' || x.state === 'new').map((x) => x.phone));
         drawContacts();
       }
@@ -1712,34 +1976,33 @@
     wireDropzone($('#csv-drop'), $('#csv-file'), pick);
     $('#send-broadcast').addEventListener('click', async () => {
       if (!hasInput() || !bc.sel.size) return;
+      const spec = campaignSpec();
+      if (spec.error) { $('#broadcast-result').innerHTML = `<div class="banner red">${icon('alert')}<div>${esc(spec.error)}</div></div>`; hydrateIcons($('#broadcast-result')); $('#bc-msg')?.scrollIntoView({ behavior: 'smooth', block: 'center' }); return; }
       const btn = $('#send-broadcast');
-      btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Sending…';
+      btn.disabled = true; btn.innerHTML = '<span class="spinner"></span> Starting…';
       try {
-        const data = await uploadFile(`/leads/${state.tenantId}/upload`, file, { ...manualField(), phones: JSON.stringify([...bc.sel]) });
+        const data = await uploadFile(`/campaigns/${state.tenantId}`, file, { ...manualField(), phones: JSON.stringify([...bc.sel]), campaign: JSON.stringify(spec) });
         const s = data.summary || {};
-        $('#broadcast-result').innerHTML = `<div class="banner green">${icon('check')}<div><strong>${esc(data.message)}</strong></div></div>
+        $('#broadcast-result').innerHTML = `<div class="banner green">${icon('check')}<div><strong>${esc(data.message)}</strong> Follow it under Campaigns.</div></div>
           <div class="stat-chips" style="margin-top:12px">
-            ${[['Queued', s.enqueued], ['Contacts', s.total], ['Not selected', s.notSelected], ['Duplicates', s.duplicatesSkipped], ['Invalid numbers', s.invalidSkipped], ['Opted out', s.optedOutSkipped], ['Recently contacted', s.recentlyContactedSkipped], ['Quota left today', s.quotaRemaining]]
-              .filter(([, v]) => v !== undefined).map(([k, v]) => `<div class="stat-chip"><b>${(v ?? 0).toLocaleString()}</b><span>${k}</span></div>`).join('')}</div>
-          ${data.invalidSamples?.length ? `<p class="hint" style="margin-top:8px">Invalid examples: ${data.invalidSamples.map(esc).join(', ')}</p>` : ''}`;
-        toast('Broadcast queued', `${s.enqueued} messages are on their way.`);
-        log(`Broadcast queued: ${s.enqueued} messages.`, 'success');
-        $('#csv-file').value = ''; file = null; manual.length = 0; drawManual(); bc.contacts = null; bc.sel = new Set(); $('#csv-picked').innerHTML = ''; $('#csv-contacts').innerHTML = '';
-        setTimeout(loadQueueStats, 1500);
+            ${[['In the campaign', s.enqueued], ['Not selected', s.notSelected], ['Duplicates', s.duplicatesSkipped], ['Invalid numbers', s.invalidSkipped], ['Opted out', s.optedOutSkipped], ['Not on WhatsApp', s.notOnWhatsappSkipped]]
+              .filter(([, v]) => v).map(([k, v]) => `<div class="stat-chip"><b>${(v ?? 0).toLocaleString()}</b><span>${k}</span></div>`).join('')}</div>`;
+        hydrateIcons($('#broadcast-result'));
+        toast('Campaign started', data.message);
+        log(`Campaign started: ${s.enqueued} people.`, 'success');
+        $('#csv-file').value = ''; file = null; manual.length = 0; drawManual(); bc.contacts = null; bc.sel = new Set(); bc.summary = null; $('#csv-picked').innerHTML = ''; $('#csv-contacts').innerHTML = '';
+        if (bcData.msg) { bcData.msg.name = ''; bcData.msg.when = 'now'; bcData.msg.startAt = ''; }
+        drawMsg(); await loadCampaigns();
       } catch (err) {
         $('#broadcast-result').innerHTML = `<div class="banner red">${icon('alert')}<div>${esc(err.message)}</div></div>`;
+        hydrateIcons($('#broadcast-result'));
         log(`Broadcast failed: ${err.message}`, 'error');
       } finally { btn.innerHTML = `${icon('send')}Send broadcast`; updateSendButton(); }
     });
-    $('#q-refresh').addEventListener('click', loadQueueStats);
-    loadQueueStats();
-  }
-  async function loadQueueStats() {
-    const el = $('#queue-stats'); if (!el) return;
-    try {
-      const { stats } = await api('GET', `/leads/${state.tenantId}/queue`);
-      el.innerHTML = `<div class="stat-chips">${[['Waiting', stats.waiting], ['Sent', stats.sent], ['Failed', stats.failed], ['Skipped', stats.skipped]].map(([k, v]) => `<div class="stat-chip"><b>${(v || 0).toLocaleString()}</b><span>${k}</span></div>`).join('')}</div>`;
-    } catch (err) { el.innerHTML = `<p class="muted">${esc(err.message)}</p>`; }
+    $('#q-refresh').addEventListener('click', loadCampaigns);
+    wireMsg(); wireCampaigns();
+    loadCampaigns();
+    loadTemplates().then(() => { drawMsg(); drawSendSummary(); });
   }
   function wireDropzone(zone, input, onFile) {
     input.addEventListener('change', () => onFile(input.files[0]));

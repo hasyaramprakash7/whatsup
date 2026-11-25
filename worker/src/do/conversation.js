@@ -38,8 +38,9 @@ export class ConversationDO extends DurableObject {
   }
 
   /** A new broadcast starts a fresh conversation. */
-  async reset() {
-    await this.ctx.storage.put('state', freshState());
+  async reset({ itemId = null, lang = null } = {}) {
+    // itemId: the campaign's project — their reply goes straight to it (photo, then the visit).
+    await this.ctx.storage.put('state', { ...freshState(), ...(itemId ? { campaignItem: itemId, campaignLang: lang } : {}) });
     return true;
   }
 

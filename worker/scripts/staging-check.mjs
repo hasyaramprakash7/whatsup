@@ -3,6 +3,7 @@
 //   node scripts/staging-check.mjs smoke        one short conversation — must pass before a live deploy
 //   node scripts/staging-check.mjs load 200     200 customers say "Hi" at the same moment; reports reply times
 //   node scripts/staging-check.mjs flood        one number sends 40 messages in a few seconds; the bot must go quiet
+//   node scripts/staging-check.mjs campaign     bulk sending: daily limit, continue later, statuses, reply → project
 import fs from 'node:fs';
 import crypto from 'node:crypto';
 import { execFileSync } from 'node:child_process';
@@ -97,8 +98,89 @@ async function flood() {
   console.log('✅ spam guard works');
 }
 
+/** A delivery status from Meta (delivered / read / failed with an error code). */
+async function status(waId, phone, st, error = null) {
+  const body = JSON.stringify({ object: 'whatsapp_business_account', entry: [{ id: 'staging', changes: [{ field: 'messages', value: {
+    messaging_product: 'whatsapp', metadata: { display_phone_number: '910000000000', phone_number_id: PNID },
+    statuses: [{ id: waId, status: st, timestamp: String(Math.floor(Date.now() / 1000)), recipient_id: phone, ...(error ? { errors: [error] } : {}) }] } }] }] });
+  const sig = 'sha256=' + crypto.createHmac('sha256', vars.META_APP_SECRET).update(body).digest('hex');
+  const r = await fetch(`${STAGING}/webhook`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-hub-signature-256': sig }, body });
+  if (!r.ok) throw new Error(`status webhook answered ${r.status}`);
+}
+const call = async (method, path, body) => {
+  const r = await fetch(STAGING + path, { method, headers: H, body: body ? JSON.stringify(body) : undefined });
+  const d = await r.json().catch(() => ({}));
+  if (!r.ok) throw new Error(`${method} ${path}: ${d.error || r.status}`);
+  return d;
+};
+
+/**
+ * Bulk sending end to end: limit 50 with 120 people → 50 today, 70 wait; limit raised → the rest go;
+ * delivered / read / "not on WhatsApp" statuses; a reply goes straight to the campaign's project.
+ */
+async function campaign() {
+  const tid = await tenantId();
+  const before = (await call('GET', `/api/campaigns/${tid}`)).limit;
+  const restore = { limitMode: before.mode, manualLimit: before.manualLimit, startHour: before.startHour, endHour: before.endHour };
+  const phones = Array.from({ length: 120 }, testPhone);
+  try {
+    await call('PUT', `/api/tenants/${tid}/sending`, { limitMode: 'manual', manualLimit: before.used + 50, startHour: 0, endHour: 24 });
+    const item = (await call('GET', `/api/catalog/${tid}`)).data.find((x) => x.active && x.imageUrl) || (await call('GET', `/api/catalog/${tid}`)).data[0];
+    const tpl = (await call('GET', `/api/campaigns/${tid}/templates`)).data[0];
+    const fd = new FormData();
+    fd.append('file', new Blob([`phone,name,project_name\n${phones.map((p, i) => `${p},Check ${i},${item.name}`).join('\n')}\n`], { type: 'text/csv' }), 'list.csv');
+    fd.append('campaign', JSON.stringify({ templateName: tpl.name, templateLang: tpl.language, itemId: item._id, name: 'Staging check',
+      params: tpl.vars.map((k, i) => ({ key: k, src: i === 0 ? 'name' : 'column', arg: i === 0 ? '' : 'project_name' })) }));
+    const r = await fetch(`${STAGING}/api/campaigns/${tid}`, { method: 'POST', headers: { Authorization: H.Authorization }, body: fd });
+    const created = await r.json();
+    if (!r.ok) throw new Error(`create: ${created.error}`);
+    const cid = created.campaign._id;
+    console.log(`  campaign created: ${created.message}`);
+    const stats = async () => (await call('GET', `/api/campaigns/${tid}`)).data.find((c) => c._id === cid);
+    let c;
+    for (let i = 0; i < 40; i++) { await sleep(2000); c = await stats(); if (c.status === 'waiting_limit' || c.stats.waiting <= 70) break; }
+    await sleep(4000); c = await stats();
+    console.log(`  limit 50: ${c.stats.accepted} sent, ${c.stats.waiting} waiting, status "${c.status}"`);
+    if (c.stats.accepted !== 50 || c.stats.waiting !== 70 || c.status !== 'waiting_limit') throw new Error('the daily limit was not respected');
+
+    await call('PUT', `/api/tenants/${tid}/sending`, { limitMode: 'manual', manualLimit: before.used + 1000 });
+    for (let i = 0; i < 40; i++) { await sleep(2000); c = await stats(); if (c.status === 'done') break; }
+    console.log(`  limit raised: ${c.stats.accepted} sent, ${c.stats.waiting} waiting, status "${c.status}"`);
+    if (c.stats.accepted !== 120 || c.status !== 'done') throw new Error('the rest did not continue after the limit was raised');
+
+    // statuses from Meta
+    const list = phones.map((p) => `'${p}'`).join(',');
+    const rows = d1(`SELECT phone, wa_message_id AS w FROM campaign_recipients WHERE campaign_id = '${cid}' AND phone IN (${list}) ORDER BY phone LIMIT 4`);
+    await status(rows[0].w, rows[0].phone, 'delivered');
+    await status(rows[1].w, rows[1].phone, 'delivered'); await status(rows[1].w, rows[1].phone, 'read'); await status(rows[1].w, rows[1].phone, 'delivered');
+    await status(rows[2].w, rows[2].phone, 'failed', { code: 131026, title: 'Message undeliverable' });
+    await status(rows[3].w, rows[3].phone, 'failed', { code: 131049, title: 'per-user marketing limit' });
+    c = await stats();
+    console.log(`  statuses: delivered ${c.stats.delivered + c.stats.read}, read ${c.stats.read}, not on WhatsApp ${c.stats.invalid}, held for 24 h ${c.stats.waiting}`);
+    if (c.stats.read !== 1 || c.stats.delivered !== 1 || c.stats.invalid !== 1 || c.stats.waiting !== 1) throw new Error('delivery statuses were not applied');
+
+    // a reply goes straight to the project
+    const who = phones[10];
+    const n0 = (await outbound(tid, who)).length;
+    await send(who, text('Hi'));
+    const out = await waitForReplies(tid, who, n0 + 1);
+    const first = out.filter((m) => m.sentBy !== 'broadcast').at(-1) || out.at(-1);
+    const all = out.map((m) => `${m.type}:${(m.text || '').slice(0, 40)}`).join(' | ');
+    c = await stats();
+    console.log(`  reply "Hi" → ${all.slice(0, 200)}`);
+    if (!out.some((m) => m.sentBy !== 'broadcast' && ['image', 'text'].includes(m.type) && (m.text || '').includes(item.name)) || /language|area/i.test(all)) throw new Error(`the reply did not go to the project (${first?.type})`);
+    if (c.stats.replied < 1) throw new Error('the reply was not counted');
+    console.log(`  replied counted: ${c.stats.replied}`);
+    await call('POST', `/api/campaigns/${tid}/${cid}/cancel`).catch(() => {});
+    console.log('✅ campaign check passed');
+  } finally {
+    await call('PUT', `/api/tenants/${tid}/sending`, restore).catch((e) => console.warn('restore failed', e.message));
+    for (let i = 0; i < phones.length; i += 20) await Promise.all(phones.slice(i, i + 20).map((p) => forget(tid, p)));
+  }
+}
+
 const [mode = 'smoke', arg] = process.argv.slice(2);
 try {
-  if (mode === 'smoke') await smoke(); else if (mode === 'load') await load(Number(arg) || 200); else if (mode === 'flood') await flood();
+  if (mode === 'smoke') await smoke(); else if (mode === 'load') await load(Number(arg) || 200); else if (mode === 'flood') await flood(); else if (mode === 'campaign') await campaign();
   else throw new Error(`unknown mode ${mode}`);
 } catch (err) { console.error(`❌ staging ${mode} failed: ${err.message}`); process.exit(1); }

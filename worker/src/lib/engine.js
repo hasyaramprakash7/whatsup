@@ -337,6 +337,12 @@ export class Conversation {
       const flowOn = this.flow.enabled !== false && this.flow.steps.length > 0;
       if (!flowOn) { await this.afterFlow(message); return this.touch(); }
 
+      // First reply to a campaign about one project ("Hi", "Price?", a voice note…): straight to that project.
+      // A tap on one of the template's quick-reply buttons that answers the first question still does that.
+      const first = this.flow.steps[0];
+      const answersFirst = iid && first?.type === 'choice' && first.options.some((o) => o.id === iid);
+      if (!this.state.stepId && this.state.campaignItem && !answersFirst && await this.startFromCampaign(message, iid)) return this.touch();
+
       if (isGreeting(message)) {
         const idle = Date.now() - (this.state.updatedAt || 0) > RESTART_AFTER_MS;
         const current = this.state.stepId && stepById(this.flow, this.state.stepId);
@@ -513,6 +519,8 @@ export class Conversation {
       if (step.type === 'send') { await this.sendContent(step); step = stepAfter(this.flow, step); continue; }
       if (step.type === 'finish') { await this.finish(step); return; }
       if (step.type === 'question' && step.input === 'name' && step.field && this.lead?.data?.[step.field]) { step = stepAfter(this.flow, step); continue; }
+      if (this.state.skipTo && step.id !== this.state.skipTo && !(step.type === 'question' && step.input === 'name')) { step = stepAfter(this.flow, step); continue; }
+      if (step.id === this.state.skipTo) this.state.skipTo = null;
       if (step.type === 'slots' && this.state.wantTime) { // the time they asked for earlier comes first
         const req = checkLocalTime(this.state.wantTime, new Date(), this.visitHours(step));
         this.state.wantTime = null;
@@ -816,6 +824,36 @@ export class Conversation {
     return `${this.visitWord() === 'visit' ? 'site visit' : 'booking'}${project ? ` to ${project}` : ''} on ${formatSlotLong(at)}`;
   }
   visitStep() { return this.flow.steps.find((s) => s.type === 'slots') || null; }
+
+  /**
+   * First reply to a campaign about one project: no location or budget questions — its photo and details,
+   * an answer if they asked something, then (their name if we don't have it and) the visit times.
+   * Returns false when the project or the visit step is gone (then the normal flow runs).
+   */
+  async startFromCampaign(message, iid) {
+    const it = await this.item(this.state.campaignItem);
+    const visit = this.visitStep();
+    this.state.campaignItem = null;
+    if (!it || !visit) return false;
+    if (!this.lang) await this.setLang(this.state.campaignLang === 'te' ? 'te' : 'en');
+    await this.raiseStatus('ENGAGED');
+    await this.rememberItem(it);
+    await this.sendItem(it);
+    const nameStep = this.flow.steps.find((s) => s.type === 'question' && s.input === 'name');
+    const needName = nameStep && !(nameStep.field && this.lead?.data?.[nameStep.field]);
+    const target = needName ? nameStep : visit;
+    const text = textOf(message).trim();
+    const asked = !iid && text.length > 2 && !isGreeting(message) && !isAck(message);
+    this.state.skipTo = visit.id;
+    if (asked) { // "Price?", "parking undha?", a voice note…: answer it, then ask the next thing
+      this.state.stepId = target.id; this.state.unexpected = 0;
+      if (target === visit) this.state.skipTo = null;
+      await this.unexpected(target, message, false);
+    } else {
+      await this.advance(null);
+    }
+    return true;
+  }
   visitWord() { return this.tenant.industry === 'real_estate' ? 'visit' : 'book'; }
   visitHours(step) { return { from: step.hoursFrom || '09:00', to: step.hoursTo || '19:00' }; }
   /** Back to the time step after a finished chat (one booking per visit; each new one alerts the team). */

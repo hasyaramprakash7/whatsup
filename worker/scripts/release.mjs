@@ -30,6 +30,7 @@ try {
   step(3, 'staging deploy'); run('npx wrangler d1 migrations apply whatsapp-agent-staging --remote --env staging'); run('npx wrangler deploy --env staging');
   step(4, 'staging conversation check'); await sleep(15000);
   try { run('node scripts/staging-check.mjs smoke'); } catch { await sleep(15000); run('node scripts/staging-check.mjs smoke'); } // one retry: a fresh deploy can take a moment to reach every server
+  run('node scripts/staging-check.mjs campaign'); // bulk sending: daily limit, continue later, statuses, reply → project
 
   step(5, 'live deploy'); run('npx wrangler d1 migrations apply whatsapp-agent --remote'); run('npx wrangler deploy --env=""');
   step(6, 'live health check'); await sleep(5000);

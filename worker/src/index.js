@@ -3,7 +3,7 @@ import { Hono } from 'hono';
 import { ConversationDO } from './do/conversation.js';
 import { BusinessHub } from './do/hub.js';
 import {
-  getTenant, getTenantByPhoneNumberId, getTenantByKeyHash, listTenants, insertTenant, updateTenant, publicTenant, tenantAccessToken,
+  getTenant, rowToTenant, getTenantByPhoneNumberId, getTenantByKeyHash, listTenants, insertTenant, updateTenant, publicTenant, tenantAccessToken,
   getLead, upsertLead, updateLeads, listLeads, leadStats, listChats, listMessages, applyMessageStatus,
 } from './lib/db.js';
 import { sha256Hex, safeEqual, verifyMetaSignature, generateApiKey, encryptToken, TENANT_KEY_PREFIX, signWsTicket, verifyWsTicket } from './lib/crypto.js';
@@ -16,6 +16,8 @@ import { MEMBER_KEY_PREFIX, SESSION_PREFIX, ROLES, createMember, listMembers, ge
   startTwoStep, confirmTwoStep, checkTwoStep, disableTwoStep, signSession, verifySession, audit, recentActivity, describeAction, agentMayDo } from './lib/team.js';
 import { TEMPLATES, flowFromTemplate, getTemplate, personalizeFlow } from './lib/templates.js';
 import { WhatsAppClient } from './lib/whatsapp.js';
+import { sendingSettings, dailyLimit, usage, sendingWindow, daysNeeded, costEach, cleanSending, templateShape, cleanParams, createCampaign, getCampaign, listCampaigns, listRecipients,
+  setCampaignStatus, pauseAll, applyRecipientStatus, refreshMetaLimits, PAUSE_REASONS } from './lib/campaigns.js';
 import { outboundRecorder, publish } from './lib/chatlog.js';
 import { aiDecide } from './lib/ai.js';
 import { MEDIA_FILE, moveInboundToPrivate } from './lib/media.js';
@@ -27,7 +29,6 @@ import { takeAiReply, layoutOf, listCatalog, getItem, insertItem, updateItem, de
 export { ConversationDO, BusinessHub };
 
 const app = new Hono();
-const DAILY_LIMIT_BY_TIER = { 0: 250, 1: 1000, 2: 10000, 3: 100000 };
 const REPLY_WINDOW_MS = 24 * 3600 * 1000;
 const fail = (c, status, error, extra = {}) => c.json({ success: false, error, ...extra }, status);
 const isId = (s) => /^[0-9a-f-]{36}$/i.test(String(s || ''));
@@ -229,6 +230,14 @@ async function applyStatus(env, tenant, s) {
   const errorText = err ? `${err.code}: ${err.error_data?.details || err.message || err.title || 'Unknown error'}` : null;
   const at = s.timestamp ? new Date(Number(s.timestamp) * 1000).toISOString() : nowIso();
   const msg = await applyMessageStatus(env, tenant._id, s.id, s.status, errorText);
+  const camp = await applyRecipientStatus(env, tenant._id, s.id, s.status, err).catch((e) => { console.warn('[Campaigns] status failed:', e.message); return null; });
+  if (camp?.action === 'opted_out') await updateLeads(env, tenant._id, 'phone = ?', [camp.phone], { status: 'COLD' });
+  if (camp?.action?.startsWith('pause_')) {
+    const reason = camp.action.slice(6);
+    if (await pauseAll(env, tenant._id, reason)) {
+      await env.HUB.get(env.HUB.idFromName(tenant._id)).notify(tenant._id, 'broadcast', { title: '⏸️ Broadcast paused', body: `${PAUSE_REASONS[reason]} (${camp.error})`.slice(0, 180), url: '/#/broadcast', tag: 'campaign-paused' }).catch(() => {});
+    }
+  }
   if (msg) await publish(env, tenant._id, 'message:status', { id: msg._id, waMessageId: s.id, phone: msg.phone, status: msg.status, error: msg.error });
   const changed = [];
   if (up === 'FAILED') {
@@ -634,7 +643,9 @@ app.get('/api/leads/:tid', tenantAccess(), async (c) => {
 
 app.get('/api/leads/:tid/stats', tenantAccess(), async (c) => c.json({ success: true, data: await leadStats(c.env, c.req.param('tid')) }));
 
-app.get('/api/leads/:tid/queue', tenantAccess(), async (c) => c.json({ success: true, stats: await c.env.HUB.get(c.env.HUB.idFromName(c.req.param('tid'))).queueStats() }));
+
+/** A CSV row's columns (up to 30, 300 characters each) for the template's blanks. */
+const rowVars = (row) => { const out = {}; for (const [k, v] of Object.entries(row || {}).slice(0, 30)) if (k.trim() && v !== '') out[k.trim().slice(0, 60)] = String(v).slice(0, 300); return Object.keys(out).length ? out : null; };
 
 /** Reads the uploaded CSV: unique valid numbers (first name wins), plus invalid samples and duplicate count. */
 async function readCsvRecipients(c) {
@@ -660,19 +671,20 @@ async function readCsvRecipients(c) {
     const raw = pickPhone(row); const phone = normalizePhone(raw);
     if (!isValidPhone(phone)) { invalid.push(raw || '(blank)'); continue; }
     if (seen.has(phone)) continue;
-    seen.add(phone); recipients.push({ phone, name: pickName(row) || '' });
+    seen.add(phone); recipients.push({ phone, name: pickName(row) || '', vars: rowVars(row) });
   }
   let selected = null; // phones the user ticked on the Broadcast page (null = everyone in the file)
   const raw = form.get('phones');
   if (typeof raw === 'string' && raw) { try { selected = new Set(JSON.parse(raw).map((p) => normalizePhone(String(p)))); } catch { /* ignore */ } }
-  return { rows, recipients, invalid, selected, duplicates: rows.length - recipients.length - invalid.length };
+  const columns = csvRows.length ? Object.keys(csvRows[0]).filter((k) => k.trim()).slice(0, 30) : [];
+  return { form, rows, recipients, invalid, selected, columns, duplicates: rows.length - recipients.length - invalid.length };
 }
 /** What we already know about these numbers: opted out, broadcast before (when, delivery), chatted. */
 async function knownLeads(c, tid, phones) {
   const map = new Map();
   for (let i = 0; i < phones.length; i += 90) {
     const chunk = phones.slice(i, i + 90);
-    const { results } = await c.env.DB.prepare(`SELECT phone, name, status, last_broadcast_at, broadcast_status, broadcast_error, last_message_at, last_message_direction FROM leads WHERE tenant_id = ? AND phone IN (${chunk.map(() => '?').join(',')})`).bind(tid, ...chunk).all();
+    const { results } = await c.env.DB.prepare(`SELECT phone, name, status, reach_status, last_broadcast_at, broadcast_status, broadcast_error, last_message_at, last_message_direction FROM leads WHERE tenant_id = ? AND phone IN (${chunk.map(() => '?').join(',')})`).bind(tid, ...chunk).all();
     for (const l of results) map.set(l.phone, l);
   }
   return map;
@@ -685,64 +697,171 @@ app.post('/api/leads/:tid/preview', tenantAccess(), async (c) => {
   if (!tenant) return fail(c, 404, 'Not found');
   let csv; try { csv = await readCsvRecipients(c); } catch (err) { return fail(c, err.status || 500, err.message); }
   if (!csv.recipients.length) return fail(c, 400, 'No valid phone numbers found.', { invalidSamples: csv.invalid.slice(0, 10) });
-  if (csv.recipients.length > 10000) return fail(c, 400, 'Up to 10,000 numbers per broadcast.');
+  if (csv.recipients.length > 20000) return fail(c, 400, 'Up to 20,000 numbers per campaign.');
   const known = await knownLeads(c, tid, csv.recipients.map((r) => r.phone));
   const contacts = csv.recipients.map((r) => {
     const l = known.get(r.phone);
-    const state = l?.status === 'COLD' ? 'optedOut' : l?.last_broadcast_at ? 'sent' : 'new';
+    const state = l?.status === 'COLD' ? 'optedOut' : l?.reach_status === 'invalid' ? 'invalid' : l?.last_broadcast_at ? 'sent' : 'new';
     return { phone: r.phone, name: r.name || l?.name || '', state, leadStatus: l?.status || null, lastBroadcastAt: l?.last_broadcast_at || null, broadcastStatus: l?.broadcast_status || null, broadcastError: l?.broadcast_error || null, replied: !!(l?.last_broadcast_at && l.last_message_direction === 'in' && l.last_message_at > l.last_broadcast_at) };
   });
-  const limit = DAILY_LIMIT_BY_TIER[tenant.tier] ?? 250;
-  const sent24h = (await c.env.DB.prepare('SELECT COUNT(*) AS n FROM leads WHERE tenant_id = ? AND last_broadcast_at >= ?').bind(tid, new Date(Date.now() - 864e5).toISOString()).first()).n;
-  return c.json({ success: true, data: contacts, summary: { total: csv.rows.length, duplicates: csv.duplicates, invalid: csv.invalid.length, invalidSamples: csv.invalid.slice(0, 10), quotaRemaining: Math.max(limit - sent24h, 0), limit, tier: tenant.tier } });
+  const lim = await limitInfo(c, tenant);
+  return c.json({ success: true, data: contacts, summary: { total: csv.rows.length, duplicates: csv.duplicates, invalid: csv.invalid.length, invalidSamples: csv.invalid.slice(0, 10), columns: csv.columns }, limit: lim });
 });
 
-app.post('/api/leads/:tid/upload', tenantAccess(), async (c) => {
+// ---------------- campaigns (bulk sending) ----------------
+/** Daily limit, what's used, sending hours and prices: everything the Broadcast page shows at the top. */
+async function limitInfo(c, tenant) {
+  const s = sendingSettings(tenant);
+  const lim = dailyLimit(tenant);
+  const { used, freesAt } = await usage(c.env, tenant._id);
+  const win = sendingWindow(Date.now(), s, c.env.SITE_UTC_OFFSET);
+  const unlimited = !Number.isFinite(lim.limit);
+  return {
+    limit: unlimited ? null : lim.limit, unlimited, mode: lim.mode, manualLimit: s.manualLimit ?? null,
+    metaLimit: lim.meta == null ? null : Number.isFinite(lim.meta) ? lim.meta : 'unlimited', aboveMeta: lim.aboveMeta,
+    quality: s.quality || null, metaCheckedAt: s.metaCheckedAt || null,
+    used, room: unlimited ? null : Math.max(lim.limit - used, 0), freesAt: freesAt ? new Date(freesAt).toISOString() : null,
+    startHour: s.startHour, endHour: s.endHour, open: win.open, nextOpenAt: win.nextOpenAt ? new Date(win.nextOpenAt).toISOString() : null,
+    costMarketing: s.costMarketing, costUtility: s.costUtility,
+  };
+}
+
+/** The business's approved templates, ready for the Broadcast page (variables, photo header, buttons). */
+async function approvedTemplates(c, tenant) {
+  if (String(c.env.GRAPH_BASE_URL) === 'fake' || !tenant.wabaId) {
+    // Staging / no WhatsApp account linked: the template from Settings, assumed to be "Hi {{1}} … {{2}}".
+    const tp = tenant.templates || {};
+    const name = tp.broadcastName || c.env.DEFAULT_BROADCAST_TEMPLATE;
+    return [templateShape({ name, language: tp.broadcastLanguage || c.env.DEFAULT_BROADCAST_LANGUAGE || 'en', category: 'MARKETING', status: 'APPROVED',
+      components: [{ type: 'BODY', text: tp.broadcastName && tp.broadcastHasParams === false ? 'Hello from {business}!' : 'Hi {{1}}, an update from {{2}}.' }] })];
+  }
+  const r = await graph(c, tenant, 'GET', `${tenant.wabaId}/message_templates?fields=name,status,language,category,components,parameter_format&limit=200`);
+  if (!r.ok) throw Object.assign(new Error(r.data?.error?.message || 'Could not load your templates from WhatsApp.'), { status: 502 });
+  return (r.data?.data || []).filter((t) => t.status === 'APPROVED').map(templateShape)
+    .sort((a, b) => (a.category === 'MARKETING' ? 0 : 1) - (b.category === 'MARKETING' ? 0 : 1) || a.name.localeCompare(b.name));
+}
+
+app.get('/api/campaigns/:tid/templates', tenantAccess(), async (c) => {
+  const tenant = await getTenant(c.env, c.req.param('tid'));
+  if (!tenant) return fail(c, 404, 'Not found');
+  try { return c.json({ success: true, data: await approvedTemplates(c, tenant), defaultName: tenant.templates?.broadcastName || c.env.DEFAULT_BROADCAST_TEMPLATE }); }
+  catch (err) { return fail(c, err.status || 500, err.message); }
+});
+
+app.get('/api/campaigns/:tid', tenantAccess(), async (c) => {
+  const tenant = await getTenant(c.env, c.req.param('tid'));
+  if (!tenant) return fail(c, 404, 'Not found');
+  const [campaigns, limit] = await Promise.all([listCampaigns(c.env, tenant._id, { limit: Math.min(parseInt(c.req.query('limit'), 10) || 30, 100) }), limitInfo(c, tenant)]);
+  return c.json({ success: true, data: campaigns, limit, reasons: PAUSE_REASONS });
+});
+
+app.get('/api/campaigns/:tid/:cid/recipients', tenantAccess(), async (c) => {
+  const { tid, cid } = c.req.param();
+  if (!await getCampaign(c.env, tid, cid)) return fail(c, 404, 'Campaign not found');
+  const status = c.req.query('status') || '';
+  if (status && !['waiting', 'sent', 'delivered', 'read', 'replied', 'failed', 'capped', 'invalid', 'skipped', 'cancelled'].includes(status)) return fail(c, 400, 'Unknown status');
+  return c.json({ success: true, data: await listRecipients(c.env, tid, cid, { status, page: Math.max(parseInt(c.req.query('page'), 10) || 1, 1) }) });
+});
+
+app.post('/api/campaigns/:tid/:cid/:action{pause|resume|cancel}', tenantAccess(), async (c) => {
+  const { tid, cid, action } = c.req.param();
+  const camp = await getCampaign(c.env, tid, cid);
+  if (!camp) return fail(c, 404, 'Campaign not found');
+  if (['done', 'cancelled'].includes(camp.status)) return fail(c, 400, 'This campaign has finished.');
+  if (action === 'pause') await setCampaignStatus(c.env, tid, cid, 'paused', 'user');
+  if (action === 'resume') {
+    await setCampaignStatus(c.env, tid, cid, Date.parse(camp.startAt) > Date.now() ? 'scheduled' : 'sending');
+    await c.env.HUB.get(c.env.HUB.idFromName(tid)).kick(tid);
+  }
+  if (action === 'cancel') {
+    await c.env.DB.prepare("UPDATE campaign_recipients SET status = 'cancelled' WHERE campaign_id = ? AND status = 'waiting'").bind(cid).run();
+    await setCampaignStatus(c.env, tid, cid, 'cancelled');
+  }
+  const [updated] = await listCampaigns(c.env, tid, { ids: [cid] });
+  return c.json({ success: true, data: updated });
+});
+
+/** Daily limit (auto from Meta, or a number), sending hours, price per message. Owners only. */
+app.put('/api/tenants/:tid/sending', tenantAccess(), async (c) => {
+  const tenant = await getTenant(c.env, c.req.param('tid'));
+  if (!tenant) return fail(c, 404, 'Not found');
+  const b = await c.req.json().catch(() => ({}));
+  const { value, error } = cleanSending(b, tenant.sending || {});
+  if (error) return fail(c, 400, error);
+  const updated = await updateTenant(c.env, tenant._id, { sending: value });
+  await c.env.HUB.get(c.env.HUB.idFromName(tenant._id)).kick(tenant._id); // a higher limit starts waiting campaigns now
+  return c.json({ success: true, limit: await limitInfo(c, updated) });
+});
+
+/** Asks Meta for the live limit and quality now (instead of waiting for the next check). */
+app.post('/api/tenants/:tid/sending/refresh', tenantAccess(), async (c) => {
+  const tenant = await getTenant(c.env, c.req.param('tid'));
+  if (!tenant) return fail(c, 404, 'Not found');
+  await refreshMetaLimits(c.env, { tenants: [tenant], token: (t) => tenantAccessToken(c.env, t), force: true });
+  return c.json({ success: true, limit: await limitInfo(c, await getTenant(c.env, tenant._id)) });
+});
+
+/** Creates a campaign from the ticked contacts and starts (or schedules) it. Big lists continue day after day. */
+app.post('/api/campaigns/:tid', tenantAccess(), async (c) => {
   const tid = c.req.param('tid');
   const tenant = await getTenant(c.env, tid);
   if (!tenant || !tenant.isActive) return fail(c, 400, 'This business is not active.');
   let csv; try { csv = await readCsvRecipients(c); } catch (err) { return fail(c, err.status || 500, err.message); }
+  let spec; try { spec = JSON.parse(csv.form.get('campaign') || '{}'); } catch { return fail(c, 400, 'Invalid campaign settings.'); }
+
+  // Template: must be one of the approved ones, with every blank filled.
+  let templates; try { templates = await approvedTemplates(c, tenant); } catch (err) { return fail(c, err.status || 500, err.message); }
+  const shape = templates.find((t) => t.name === spec.templateName && t.language === spec.templateLang);
+  if (!shape) return fail(c, 400, 'Choose one of your approved templates.');
+  if (shape.unsupported) return fail(c, 400, `This template has ${shape.unsupported}, which can't be sent from here yet. Choose another one.`);
+  const params = cleanParams(spec.params, shape);
+  if (params.error) return fail(c, 400, params.error);
+  const item = spec.itemId ? await getItem(c.env, tid, String(spec.itemId)) : null;
+  if (spec.itemId && !item) return fail(c, 400, 'That project / product no longer exists.');
+  if (params.value.some((p) => ['project', 'price'].includes(p.src)) && !item) return fail(c, 400, 'Choose the project for the {{project}} blanks.');
+  let image = null;
+  if (shape.header?.format === 'IMAGE') {
+    if (spec.headerImage === 'project') { if (!item?.imageUrl) return fail(c, 400, 'This template needs a photo: choose a project that has one.'); image = 'project'; }
+    else if (/^https:\/\/\S{8,900}$/.test(String(spec.headerImage || ''))) image = String(spec.headerImage);
+    else return fail(c, 400, 'This template needs a photo: choose the project photo or paste a photo link.');
+  }
+  const startAt = spec.startAt ? new Date(spec.startAt) : new Date();
+  if (Number.isNaN(startAt.getTime()) || startAt.getTime() > Date.now() + 30 * 864e5) return fail(c, 400, 'Start time: within the next 30 days.');
+
   const { rows, invalid, selected } = csv;
   const recipients = selected ? csv.recipients.filter((r) => selected.has(r.phone)) : csv.recipients;
-  const summary = { total: rows.length, enqueued: 0, duplicatesSkipped: csv.duplicates, invalidSkipped: invalid.length, notSelected: csv.recipients.length - recipients.length, optedOutSkipped: 0, recentlyContactedSkipped: 0 };
-  if (!recipients.length) return fail(c, 400, selected ? 'Select at least one contact to send to.' : 'No valid phone numbers found in the CSV.', { invalidSamples: invalid.slice(0, 10), summary });
+  const summary = { total: rows.length, enqueued: 0, duplicatesSkipped: csv.duplicates, invalidSkipped: invalid.length, notSelected: csv.recipients.length - recipients.length, optedOutSkipped: 0, notOnWhatsappSkipped: 0 };
+  if (!recipients.length) return fail(c, 400, selected ? 'Select at least one contact to send to.' : 'No valid phone numbers found.', { invalidSamples: invalid.slice(0, 10), summary });
+  if (recipients.length > 20000) return fail(c, 400, 'Up to 20,000 numbers per campaign.');
 
-  // Never message people who opted out. The cooldown only applies when nobody was picked by hand:
-  // a contact the user ticked again on purpose is sent again.
-  const cooldownDays = selected ? 0 : Number(c.env.BROADCAST_COOLDOWN_DAYS) || 0;
-  const cooldownStart = cooldownDays ? new Date(Date.now() - cooldownDays * 864e5).toISOString() : null;
+  // Never message people who opted out, or numbers WhatsApp said are not on WhatsApp.
   const skip = new Set();
   for (const l of (await knownLeads(c, tid, recipients.map((r) => r.phone))).values()) {
     if (l.status === 'COLD') { skip.add(l.phone); summary.optedOutSkipped++; }
-    else if (cooldownStart && l.last_broadcast_at && l.last_broadcast_at >= cooldownStart) { skip.add(l.phone); summary.recentlyContactedSkipped++; }
+    else if (l.reach_status === 'invalid') { skip.add(l.phone); summary.notOnWhatsappSkipped++; }
   }
   const toSend = recipients.filter((r) => !skip.has(r.phone));
-  if (!toSend.length) return c.json({ success: true, message: 'Nothing to send: every valid number has opted out or was contacted recently.', summary, invalidSamples: invalid.slice(0, 10) });
+  if (!toSend.length) return c.json({ success: true, message: 'Nothing to send: every number opted out or is not on WhatsApp.', summary });
 
-  const limit = DAILY_LIMIT_BY_TIER[tenant.tier] ?? 250;
-  const sent24h = (await c.env.DB.prepare('SELECT COUNT(*) AS n FROM leads WHERE tenant_id = ? AND last_broadcast_at >= ?').bind(tid, new Date(Date.now() - 864e5).toISOString()).first()).n;
-  if (toSend.length + sent24h > limit) return fail(c, 429, `Tier ${tenant.tier} limit exceeded. Allowed: ${limit}/24h, already sent: ${sent24h}.`);
-
+  // Everyone becomes a customer record now (so replies are recognised); the broadcast time is set when it is sent.
   const now = nowIso();
-  const stmt = c.env.DB.prepare(`INSERT INTO leads (id, tenant_id, phone, name, status, last_broadcast_at, updated_at) VALUES (?, ?, ?, ?, 'CONTACTED', ?, ?)
-    ON CONFLICT (tenant_id, phone) DO UPDATE SET name = CASE WHEN excluded.name <> '' THEN excluded.name ELSE leads.name END,
-      status = CASE WHEN leads.status = 'NEW' THEN 'CONTACTED' ELSE leads.status END,
-      last_broadcast_at = excluded.last_broadcast_at, last_broadcast_message_id = NULL, broadcast_status = NULL, broadcast_status_at = NULL, broadcast_error = NULL, updated_at = excluded.updated_at`);
-  for (let i = 0; i < toSend.length; i += 50) {
-    await c.env.DB.batch(toSend.slice(i, i + 50).map((r) => stmt.bind(crypto.randomUUID(), tid, r.phone, r.name, now, now)));
-  }
+  const stmt = c.env.DB.prepare(`INSERT INTO leads (id, tenant_id, phone, name, status, updated_at) VALUES (?, ?, ?, ?, 'NEW', ?)
+    ON CONFLICT (tenant_id, phone) DO UPDATE SET name = CASE WHEN leads.name = '' AND excluded.name <> '' THEN excluded.name ELSE leads.name END`);
+  for (let i = 0; i < toSend.length; i += 50) await c.env.DB.batch(toSend.slice(i, i + 50).map((r) => stmt.bind(crypto.randomUUID(), tid, r.phone, r.name, now)));
 
-  const t = tenant.templates || {};
-  const template = {
-    name: t.broadcastName || c.env.DEFAULT_BROADCAST_TEMPLATE,
-    language: t.broadcastLanguage || c.env.DEFAULT_BROADCAST_LANGUAGE || 'en',
-    hasParams: t.broadcastName ? t.broadcastHasParams !== false : true,
-    // Telugu version for Telugu customers: only when the business turns it on (after Meta approves it).
-    telugu: t.broadcastTelugu === true,
-  };
-  await c.env.HUB.get(c.env.HUB.idFromName(tid)).startBroadcast(tid, toSend, template);
+  const settings = sendingSettings(tenant);
+  const cid = await createCampaign(c.env, tid, {
+    name: String(spec.name || '').trim().slice(0, 80) || `${item?.name || shape.name} · ${new Date().toLocaleDateString('en-IN', { day: 'numeric', month: 'short' })}`,
+    templateName: shape.name, templateLang: shape.language, category: shape.category, params: params.value,
+    header: { named: shape.named, image }, itemId: item?._id || null, telugu: spec.telugu === true,
+    startAt: startAt.toISOString(), costEach: costEach(settings, shape.category), createdBy: c.get('auth')?.memberId || c.get('auth')?.role || null,
+  }, toSend);
+  await c.env.HUB.get(c.env.HUB.idFromName(tid)).kick(tid);
   summary.enqueued = toSend.length;
-  return c.json({ success: true, message: `Queued ${toSend.length} messages. Sending in the background.`, summary: { ...summary, quotaRemaining: limit - sent24h - toSend.length, tier: tenant.tier }, invalidSamples: invalid.slice(0, 10) }, 202);
+  const lim = await limitInfo(c, tenant);
+  const days = lim.unlimited ? 1 : daysNeeded(toSend.length, lim.room, lim.limit);
+  const [campaign] = await listCampaigns(c.env, tid, { ids: [cid] });
+  return c.json({ success: true, message: `Campaign started: ${toSend.length.toLocaleString('en-IN')} people${days > 1 ? `, over about ${days} days (daily limit ${lim.limit.toLocaleString('en-IN')})` : ''}.`, summary, days, campaign, invalidSamples: invalid.slice(0, 10) }, 202);
 });
 
 // ---------------- inbox ----------------
@@ -896,12 +1015,22 @@ app.get('/api/monitor', async (c) => {
   return c.json({ success: true, problems: await findProblems(c.env) });
 });
 
+/** Every 10 minutes: Meta's live limit / quality (every 3 hours per business) and a nudge for running campaigns. */
+async function campaignsTick(env) {
+  const { results } = await env.DB.prepare("SELECT * FROM tenants WHERE is_active = 1 AND phone_number_id IS NOT NULL AND phone_number_id != ''").all();
+  const tenants = results.map(rowToTenant);
+  await refreshMetaLimits(env, { tenants, token: (t) => tenantAccessToken(env, t), notify: (t, p) => env.HUB.get(env.HUB.idFromName(t._id)).notify(t._id, 'broadcast', { ...p, url: '/#/broadcast', tag: 'quality' }) });
+  const { results: busy } = await env.DB.prepare("SELECT DISTINCT tenant_id FROM campaigns WHERE status IN ('sending', 'scheduled', 'waiting_limit', 'waiting_hours')").all();
+  for (const r of busy) await env.HUB.get(env.HUB.idFromName(r.tenant_id)).kick(r.tenant_id).catch(() => {});
+}
+
 export default {
   fetch: app.fetch,
   // Every 10 minutes: check the bot is answering and alert the admin's phone if not.
   scheduled: (event, env, ctx) => ctx.waitUntil(Promise.all([
     runMonitor(env).catch((err) => console.error('[Monitor] failed:', err.message)),
     dailySummary(env, event.scheduledTime).catch((err) => console.error('[Monitor] daily summary failed:', err.message)),
+    campaignsTick(env).catch((err) => console.error('[Campaigns] tick failed:', err.message)),
     moveInboundToPrivate(env).catch((err) => console.error('[Media] move failed:', err.message)),
     // Chat messages and customers' files are kept for RETENTION_DAYS (default 365), then deleted.
     applyRetention(env, Number(env.RETENTION_DAYS) || 365).catch((err) => console.error('[Privacy] retention failed:', err.message)),

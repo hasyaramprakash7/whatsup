@@ -80,6 +80,13 @@ export class WhatsAppClient {
 
   location(to, { latitude, longitude, name, address }) { return this.post({ to, type: 'location', location: { latitude, longitude, name, address } }); }
 
+  /** A template with ready-made components (body variables, a photo header…). */
+  templateWith(to, name, language, components = []) {
+    const template = { name, language: { code: language } };
+    if (components.length) template.components = components;
+    return this.post({ to, type: 'template', template });
+  }
+
   template(to, name, params = [], language = 'en') {
     const template = { name, language: { code: language } };
     if (params.length) template.components = [{ type: 'body', parameters: params.map((t) => ({ type: 'text', text: String(t) })) }];

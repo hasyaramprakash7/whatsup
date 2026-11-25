@@ -11,7 +11,7 @@ export function rowToTenant(r) {
   return {
     _id: r.id, businessName: r.business_name, industry: r.industry, phoneNumberId: r.phone_number_id, wabaId: r.waba_id,
     adminNotificationPhone: r.admin_phone, tier: r.tier, isActive: !!r.is_active,
-    profile: json(r.profile, {}), flow: json(r.flow, {}), ai: json(r.ai, {}), templates: json(r.templates, {}),
+    profile: json(r.profile, {}), flow: json(r.flow, {}), ai: json(r.ai, {}), templates: json(r.templates, {}), sending: json(r.sending, {}),
     createdAt: r.created_at, updatedAt: r.updated_at,
     // never sent to clients; used internally to decrypt the WhatsApp token
     _tokenEnc: r.access_token_enc,
@@ -32,9 +32,9 @@ export const tenantAccessToken = (env, tenant) => decryptToken(env.TOKEN_ENCRYPT
 const TENANT_COLS = {
   businessName: 'business_name', industry: 'industry', phoneNumberId: 'phone_number_id', wabaId: 'waba_id', accessTokenEnc: 'access_token_enc',
   apiKeyHash: 'api_key_hash', adminNotificationPhone: 'admin_phone', tier: 'tier', isActive: 'is_active',
-  profile: 'profile', flow: 'flow', ai: 'ai', templates: 'templates',
+  profile: 'profile', flow: 'flow', ai: 'ai', templates: 'templates', sending: 'sending',
 };
-const tenantValue = (k, v) => (['profile', 'flow', 'ai', 'templates'].includes(k) ? JSON.stringify(v ?? {}) : k === 'isActive' ? (v ? 1 : 0) : v);
+const tenantValue = (k, v) => (['profile', 'flow', 'ai', 'templates', 'sending'].includes(k) ? JSON.stringify(v ?? {}) : k === 'isActive' ? (v ? 1 : 0) : v);
 
 export async function insertTenant(env, fields) {
   const id = newId();
@@ -60,7 +60,7 @@ const LEAD_COLS = {
   adminAlertStatus: 'admin_alert_status', adminAlertAt: 'admin_alert_at', adminAlertMessageId: 'admin_alert_message_id', adminAlertError: 'admin_alert_error',
   lastMessageAt: 'last_message_at', lastMessagePreview: 'last_message_preview', lastMessageDirection: 'last_message_direction',
   lastMessageSentBy: 'last_message_sent_by', lastInboundAt: 'last_inbound_at', unreadCount: 'unread_count', botPaused: 'bot_paused',
-  language: 'language',
+  language: 'language', campaignId: 'campaign_id', reachStatus: 'reach_status', cappedUntil: 'capped_until',
 };
 const leadValue = (k, v) => (k === 'data' ? JSON.stringify(v || {}) : k === 'botPaused' ? (v ? 1 : 0) : v instanceof Date ? v.toISOString() : v ?? null);
 

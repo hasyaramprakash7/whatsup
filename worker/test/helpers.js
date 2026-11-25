@@ -33,7 +33,7 @@ export async function setup() {
   const { Conversation } = await import(lib('engine.js'));
 
   /** A new customer (optionally with a known language). */
-  function newChat({ language = null, phone = '919111111111', refuse = ['team_lead_alert'], templates = null } = {}) {
+  function newChat({ language = null, phone = '919111111111', refuse = ['team_lead_alert'], templates = null, state: initial } = {}) {
     store.lead = { name: '', status: 'NEW', data: {}, language };
     const sent = [];
     // The fake WhatsApp refuses the template names in `refuse` (like Meta does for unapproved ones).
@@ -42,7 +42,7 @@ export async function setup() {
       sent.push({ who, kind, args });
       return { messages: [{ id: `wamid.test${sent.length}` }] };
     } });
-    let state;
+    let state = initial;
     const send = async (message) => {
       const from = sent.length;
       const tenant = structuredClone(TENANT); if (templates) tenant.templates = { ...tenant.templates, ...templates };
