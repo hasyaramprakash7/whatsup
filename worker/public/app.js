@@ -1333,7 +1333,20 @@
       <div class="details-section"><h4>Team alert</h4><dl class="kv">
         <dt>Alert</dt><dd>${l.adminAlertStatus ? `<span class="pill ${l.adminAlertStatus === 'FAILED' ? 'd-FAILED' : 'd-READ'}">${esc(l.adminAlertStatus.toLowerCase())}</span>` : '<span class="muted">None yet</span>'}</dd>
         ${l.adminAlertError ? `<dt>Why</dt><dd style="color:var(--danger)">${esc(l.adminAlertError)}</dd>` : ''}</dl></div>
-      <div class="details-section"><h4>Timeline</h4><dl class="kv"><dt>First seen</dt><dd>${esc(new Date(l.createdAt).toLocaleString())}</dd><dt>Last message</dt><dd>${relTime(l.lastMessageAt)}</dd></dl></div>`;
+      <div class="details-section"><h4>Timeline</h4><dl class="kv"><dt>First seen</dt><dd>${esc(new Date(l.createdAt).toLocaleString())}</dd><dt>Last message</dt><dd>${relTime(l.lastMessageAt)}</dd></dl></div>
+      <div class="details-section"><h4>Privacy</h4><p class="muted small" style="margin:0 0 8px">Chats and customer files are kept for 1 year. If this customer asks to be forgotten:</p>
+        <button type="button" class="btn sm danger" id="forget-customer">${icon('trash', 'sm')}Delete this customer's data</button></div>`;
+    hydrateIcons(el);
+    $('#forget-customer')?.addEventListener('click', async (e) => {
+      if (!confirm(`Delete everything about ${displayName(l)} (+${l.phone})?\n\nThis removes their messages, photos, voice notes, answers and booking. It cannot be undone.`)) return;
+      const b = e.currentTarget; b.disabled = true;
+      try {
+        const { removed } = await api('DELETE', `/chats/${state.tenantId}/${l.phone}`);
+        toast('Customer data deleted', `${removed.messages} messages and ${removed.files} files removed.`);
+        state.inbox?.chats?.delete(l.phone);
+        location.hash = '#/inbox';
+      } catch (x) { toast('Could not delete', x.message, { kind: 'error' }); b.disabled = false; }
+    });
   }
 
   // ============================================================

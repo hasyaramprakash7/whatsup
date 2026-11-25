@@ -11,6 +11,7 @@ import { normalizePhone, isValidPhone, parseCsv, pickPhone, pickName, nowIso } f
 import { validateFlow, validateProfile, validateAi, flowFields } from './lib/flow.js';
 import { translateFlow } from './lib/lang.js';
 import { recordEvent, findProblems, runMonitor } from './lib/monitor.js';
+import { forgetCustomer, applyRetention } from './lib/privacy.js';
 import { TEMPLATES, flowFromTemplate, getTemplate, personalizeFlow } from './lib/templates.js';
 import { WhatsAppClient } from './lib/whatsapp.js';
 import { outboundRecorder, publish } from './lib/chatlog.js';
@@ -766,6 +767,15 @@ app.patch('/api/chats/:tid/:phone', tenantAccess(), phoneOk, async (c) => {
 });
 
 // Customer photos, voice notes, videos and documents (copied from WhatsApp to R2 when they arrive).
+/** Deletes everything about one customer (their request under data-protection law). */
+app.delete('/api/chats/:tid/:phone', tenantAccess(), phoneOk, async (c) => {
+  const { tid, phone } = c.req.param();
+  const removed = await forgetCustomer(c.env, tid, phone);
+  await recordEvent(c.env, 'customer_deleted', `+${phone.slice(0, 4)}… (${removed.messages} messages, ${removed.files} files)`, tid);
+  await publish(c.env, tid, 'lead:removed', { phone });
+  return c.json({ success: true, removed });
+});
+
 app.get('/api/media/:tid/:file', tenantAccess(), async (c) => {
   const { tid, file } = c.req.param();
   if (!MEDIA_FILE.test(file)) return fail(c, 400, 'Invalid file name');
@@ -789,5 +799,7 @@ export default {
   scheduled: (event, env, ctx) => ctx.waitUntil(Promise.all([
     runMonitor(env).catch((err) => console.error('[Monitor] failed:', err.message)),
     moveInboundToPrivate(env).catch((err) => console.error('[Media] move failed:', err.message)),
+    // Chat messages and customers' files are kept for RETENTION_DAYS (default 365), then deleted.
+    applyRetention(env, Number(env.RETENTION_DAYS) || 365).catch((err) => console.error('[Privacy] retention failed:', err.message)),
   ])),
 };

@@ -37,6 +37,12 @@ export class ConversationDO extends DurableObject {
     return true;
   }
 
+  /** "Delete customer data": the bot forgets this chat completely. */
+  async forget() {
+    await this.ctx.storage.deleteAll();
+    return true;
+  }
+
   async getState() {
     return { state: (await this.ctx.storage.get('state')) || null, pending: this.sql.exec('SELECT COUNT(*) AS n FROM inbox').one().n };
   }

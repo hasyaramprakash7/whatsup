@@ -64,6 +64,7 @@
     "DEFAULT_BROADCAST_TEMPLATE": "realestate_reengage_v1",
     "DEFAULT_BROADCAST_LANGUAGE": "en",
     "BROADCAST_RATE_PER_SECOND": "10",
+    "RETENTION_DAYS": "365",
     // Contact for phone push services (Web Push VAPID "sub")
     "VAPID_SUBJECT": "https://whatsapp-agent.hasya7893828468.workers.dev"
   }
