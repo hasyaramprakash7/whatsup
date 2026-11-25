@@ -26,8 +26,10 @@ export function detectLanguage(text) {
   const t = forDetection(text);
   if (!t) return null;
   const low = t.toLowerCase().replace(/[^\p{L}\p{M}\s]/gu, ' ').replace(/\s+/g, ' ').trim();
-  if (/^(telugu|తెలుగు|telugu lo|telugulo|thelugu)$/.test(low)) return { lang: 'te', explicit: true };
-  if (/^(english|ఇంగ్లీష్|ఇంగ్లిష్|inglish)$/.test(low)) return { lang: 'en', explicit: true };
+  // "Telugu", "in Telugu", "telugu lo matladandi", "English please", "speak in english", "ఇంగ్లీష్ లో" …
+  const short = low.split(' ').length <= 5;
+  if (short && /(^|\s)(telugu|తెలుగు|thelugu|telugulo|తెలుగులో)(\s|$)/.test(low) && !/(english|ఇంగ్లీష్|ఇంగ్లిష్)/.test(low)) return { lang: 'te', explicit: true };
+  if (short && /(^|\s)(english|ఇంగ్లీష్|ఇంగ్లిష్|inglish|englishlo)(\s|$)/.test(low) && !/(telugu|తెలుగు)/.test(low)) return { lang: 'en', explicit: true };
   const te = (t.match(TE_CHARS) || []).length;
   const latin = (t.match(/[a-z]/gi) || []).length;
   if (te >= 2 && te >= latin * 0.3) return { lang: 'te' };

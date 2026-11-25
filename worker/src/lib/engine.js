@@ -50,6 +50,8 @@ const BOOK_INTENT = /\b(book|booking|visit|site ?visit|schedule|slot|appointment
 const GREETING = /^(h+i+|h+e+l+o+|hlo|helo|hai|hey+|hiya|namaste|namasthe|namaskar(am)?|vanakkam|good (morning|afternoon|evening|day)|start|restart|menu|hi there|hello there|hii there|hi andi|hello andi|నమస్తే|నమస్కారం|నమస్కారమండి|హాయ్|హాయ్ అండి|హలో|హలో అండి)[\s!.,?🙏👋😊]*$/iu;
 const RESTART_AFTER_MS = 30 * 60 * 1000;
 const isGreeting = (m) => m?.type === 'text' && GREETING.test((m.text?.body || '').trim());
+// Asking for a human: only then does the bot pause for the team.
+const WANTS_PERSON = /\b(call me|call|calling|callback|call back|person|human|agent|executive|manager|someone|somebody|talk to|speak to|speak with|representative|customer care|phone me|ring me)\b|కాల్|మనిషి|మాట్లాడాలి|మాట్లాడతాను|మాట్లాడండి|ఫోన్ చేయండి|ఫోన్ చెయ్యండి/i;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
 /** "my name is ravi kumar" / "నా పేరు రవి" / "naa peru Ravi" → "Ravi Kumar" / "రవి" / "Ravi". */
 export function cleanName(text) {
@@ -299,7 +301,7 @@ export class Conversation {
       if (isGreeting(message)) {
         const idle = Date.now() - (this.state.updatedAt || 0) > RESTART_AFTER_MS;
         const current = this.state.stepId && stepById(this.flow, this.state.stepId);
-        if (current && !this.state.done && !idle) { await this.ask(current, { short: true }); return this.touch(); } // carry on where they were
+        if (current && !this.state.done && !idle) { await this.ask(current); return this.touch(); } // carry on where they were
         this.restart();
         if (!this.lang) { await this.askLanguage(); return this.touch(); } // first time and we can't tell: ask once
         await this.raiseStatus('ENGAGED');
@@ -459,6 +461,8 @@ export class Conversation {
     const g = await geocode(this.env, text);
     if (!g) return { invalid: true, location: true };
     const point = { lat: g.lat, lng: g.lng }; const a = nearArea(point);
+    const centers = areas.filter((x) => x.center);
+    if (!a && centers.length && Math.min(...centers.map((x) => distanceKm(point, x.center))) > 80) return { invalid: true, location: true };
     return a ? pick(a, point) : { value: g.label || text, point };
   }
 
@@ -665,7 +669,7 @@ export class Conversation {
         if (this.state.aiSinceAsk >= 2 || Date.now() - (this.state.askedAt || 0) > REASK_AFTER_MS || d.itemIds?.length) return this.ask(step, { short: true });
         return null;
       }
-      if (d?.action === 'handoff') return (await this.unclearVoice(message)) || this.handoff(message, d.reply);
+      if (d?.action === 'handoff') return this.aiHandoff(message, d.reply, step);
     }
 
     this.state.unexpected = (this.state.unexpected || 0) + 1;
@@ -699,7 +703,7 @@ export class Conversation {
     }
     if (this.aiCfg.answerAfterFlow !== false && await this.aiAvailable(message)) {
       const d = await aiDecide(this.env, { tenant: this.tenant, aiCfg: this.aiCfg, pending: null, catalog: await this.catalog(), customerPlace: this.customerPlace(), history: await recentTurns(this.env, this.tenant._id, this.phone), language: this.lang });
-      if (d?.action === 'handoff') return (await this.unclearVoice(message)) || this.handoff(message, d.reply);
+      if (d?.action === 'handoff') return this.aiHandoff(message, d.reply, null);
       const visitStep = this.visitStep();
       if (d?.requestedTime && visitStep) {
         const req = checkLocalTime(d.requestedTime, new Date(), this.visitHours(visitStep));
@@ -758,6 +762,28 @@ export class Conversation {
     this.state.voiceRetryAt = Date.now();
     await this.bot.text(this.phone, this.U.voiceRetry);
     return true;
+  }
+
+  /**
+   * The AI couldn't answer from the business information. Only a customer who asks for a person (or a call)
+   * gets the chat handed over and the bot paused; anyone else hears that the team will follow up, the team is
+   * alerted, and the bot carries on with the booking steps — a question about schools shouldn't stop a booking.
+   */
+  async aiHandoff(message, reply, step) {
+    if (await this.unclearVoice(message)) return true;
+    const said = textOf(message).replace(/\(English:[^)]*\)/i, '').trim();
+    if (WANTS_PERSON.test(textOf(message))) return this.handoff(message, reply);
+    if (reply) await this.ai.text(this.phone, reply);
+    if (Date.now() - (this.state.questionAlertAt || 0) > 10 * 60 * 1000) { // one alert per 10 minutes per chat
+      this.state.questionAlertAt = Date.now();
+      await this.alertTeam({
+        kind: 'handoff', headline: 'Question for your team',
+        details: `They asked: ${said.replace(/\s+/g, ' ').slice(0, 200)}`,
+        text: `❓ *QUESTION FOR YOUR TEAM*\n\n• *Name:* ${this.lead?.name || '—'}\n• *Phone:* +${this.phone}\n• *They asked:* ${said}\n\nThe bot is still running this chat (the booking continues). Reply from the Inbox if needed.`,
+      });
+    }
+    if (step) return this.ask(step, { short: true });
+    return null;
   }
 
   /** Hands the chat to the team: tells the customer, pauses the bot for this chat, alerts the team. */

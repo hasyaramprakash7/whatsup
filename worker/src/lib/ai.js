@@ -125,10 +125,14 @@ export async function aiDecide(env, { tenant, aiCfg, pending, history, catalog =
   if (!out || !['answer', 'select', 'handoff'].includes(out.action)) return null;
   // Drop any link the business didn't give us (the model sometimes invents placeholder URLs).
   const known = messages[0].content;
-  const reply = String(out.reply || '')
+  let reply = String(out.reply || '')
     .replace(/(?:https?:\/\/|www\.)[^\s)]+/gi, (url) => (known.includes(url.replace(/[.,!?]+$/, '')) ? url : ''))
     .replace(/\s*\(\s*P\d{1,3}\s*\)|\bP\d{1,3}\b\s*[:\-–]?\s*/g, ' ') // internal product ids are never shown
     .replace(/\s+([.,!?])/g, '$1').replace(/:\s*$/, '.').replace(/[ \t]{2,}/g, ' ').trim().slice(0, 1000);
+  let shown = reply;
+  for (const o of pending?.options || []) if (o.id) shown = shown.split(o.id).join(o.title);
+  shown = shown.replace(/\b(?:SLOT|AREA|ITEM|OPT|LANG|LOC)_[A-Za-z0-9_]+\b|\b[A-Z]{2,}(?:_[A-Z0-9]+)+\b/g, '').replace(/\(\s*\)/g, '').replace(/\s+([,.!?])/g, '$1').replace(/[ \t]{2,}/g, ' ').trim();
+  reply = shown;
   const sendDocument = out.send_document === true && !!tenant.profile?.documentUrl;
   const optionId = out.option_id ? String(out.option_id) : null;
   if (out.action === 'select' && !(pending && pending.options.some((o) => o.id === optionId))) {
