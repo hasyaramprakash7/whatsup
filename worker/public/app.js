@@ -326,7 +326,7 @@
     $('#shell').classList.remove('nav-open');
     modal(`<div class="features-head" role="img" aria-label="Bluxury WhatsApp AI"><div class="brand-tag">WhatsApp AI</div><p>Everything in the app</p></div>
       <div class="card-body feature-list">${featureHtml('feature-row')}</div>
-      <div class="modal-foot">${isInstalled() ? '' : '<button class="btn" id="feat-install">' + icon('download') + 'Install the app</button>'}<button class="btn primary" data-close>Close</button></div>`, {
+      <div class="modal-foot">${isInstalled() || !canOfferInstall() ? '' : '<button class="btn" id="feat-install">' + icon('download') + 'Install the app</button>'}<button class="btn primary" data-close>Close</button></div>`, {
       onMount: (el, close) => el.querySelector('#feat-install')?.addEventListener('click', () => { close(); installApp(); }),
     });
   }
@@ -659,18 +659,47 @@
   // ---- Install as an app ----
   const isInstalled = () => matchMedia('(display-mode: standalone)').matches || matchMedia('(display-mode: fullscreen)').matches || navigator.standalone === true || document.referrer.startsWith('android-app://');
   let installPrompt = null;
+  let installedHere = false; // the app is already installed on this device (we're just in a browser tab)
   const INSTALL_BTNS = ['#install-top', '#install-side', '#install-login'];
-  const showInstall = (on) => INSTALL_BTNS.forEach((id) => { const b = $(id); if (b) b.hidden = !on; });
+  // Chrome/Edge (Android, Windows, Mac) can install with one tap, but only once they offer it (after the person has
+  // used the page a little). There the button appears only when that is ready, so a tap always opens the real install
+  // window. Browsers that never offer it (iPhone Safari, Firefox) keep the button, which shows that device's steps.
+  const browserInstalls = 'onbeforeinstallprompt' in window;
+  /** Is there an install to offer right now? (used by the App features window too) */
+  function canOfferInstall() { return !installedHere && (!browserInstalls || !!installPrompt); }
+  const showInstall = (on) => INSTALL_BTNS.forEach((id) => { const b = $(id); if (b) b.hidden = !on || installedHere || (browserInstalls && !installPrompt); });
   showInstall(!isInstalled());
-  addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e; showInstall(!isInstalled()); });
-  addEventListener('appinstalled', () => { installPrompt = null; showInstall(false); toast('App installed', 'Open Bluxury AI from your home screen.'); });
+  addEventListener('beforeinstallprompt', (e) => { e.preventDefault(); installPrompt = e; installedHere = false; showInstall(!isInstalled()); });
+  addEventListener('appinstalled', () => { installPrompt = null; installedHere = true; showInstall(false); toast('App installed ✓', 'Open Bluxury AI from your home screen or desktop.'); });
   matchMedia('(display-mode: standalone)').addEventListener?.('change', () => showInstall(!isInstalled()));
-  async function installApp() {
+  // Chrome/Edge can tell whether this app is already installed on this device: then there is nothing to install.
+  (async () => {
+    try {
+      const apps = await navigator.getInstalledRelatedApps?.();
+      if (apps?.some((x) => x.platform === 'webapp')) { installedHere = true; showInstall(false); }
+    } catch { /* not supported: keep the buttons */ }
+  })();
+  /** Chrome offers the install window a moment after the page loads; wait for it briefly instead of showing steps. */
+  const waitForInstallPrompt = (ms = 3000) => (installPrompt ? Promise.resolve() : new Promise((done) => {
+    const t = setTimeout(done, ms);
+    addEventListener('beforeinstallprompt', () => { clearTimeout(t); setTimeout(done, 0); }, { once: true });
+  }));
+  async function installApp(e) {
     $('#shell').classList.remove('nav-open');
+    const btn = e?.currentTarget; const label = btn?.innerHTML;
+    if (!installPrompt && btn) { btn.disabled = true; btn.innerHTML = '<span class="spinner"></span>'; }
+    await waitForInstallPrompt();
+    if (btn) { btn.disabled = false; btn.innerHTML = label; }
     if (installPrompt) {
-      installPrompt.prompt();
+      installPrompt.prompt(); // the browser's own "Install Bluxury WhatsApp AI?" window
       const { outcome } = await installPrompt.userChoice.catch(() => ({}));
-      if (outcome === 'accepted') { installPrompt = null; showInstall(false); }
+      if (outcome === 'accepted') { installPrompt = null; installedHere = true; showInstall(false); }
+      return;
+    }
+    if (installedHere) {
+      modal(`<div class="card-head"><span class="section-icon">${icon('check')}</span><div><h2>Already installed</h2><p>Bluxury WhatsApp AI is installed on this device.</p></div></div>
+        <div class="card-body"><p>Open <strong>Bluxury AI</strong> from your home screen, app list or desktop. In Chrome you can also click the <strong>Open in app</strong> icon at the right of the address bar.</p></div>
+        <div class="modal-foot"><button class="btn primary" data-close>OK</button></div>`);
       return;
     }
     // No install prompt from the browser (iPhone/iPad, Firefox, or Chrome not ready yet): show the steps.
@@ -680,8 +709,8 @@
     const steps = ios
       ? ['Open this page in <strong>Safari</strong>.', 'Tap the <strong>Share</strong> button (square with an arrow).', 'Tap <strong>Add to Home Screen</strong>, then <strong>Add</strong>.']
       : android
-        ? ['Open this page in <strong>Chrome</strong>.', 'Tap the <strong>⋮</strong> menu at the top right.', 'Tap <strong>Install app</strong> or <strong>Add to Home screen</strong>.']
-        : ['Use <strong>Chrome</strong> or <strong>Edge</strong>.', 'Click the <strong>install icon</strong> at the right end of the address bar, or open the <strong>⋮</strong> menu.', 'Choose <strong>Install Bluxury WhatsApp AI</strong>.'];
+        ? ['Open this page in <strong>Chrome</strong>.', 'Tap the <strong>⋮</strong> menu at the top right.', 'Tap <strong>Add to Home screen</strong> → <strong>Install</strong> (or <strong>Install app</strong>).']
+        : ['Use <strong>Chrome</strong> or <strong>Edge</strong>.', 'Click the <strong>install icon</strong> (a screen with an arrow) at the right end of the address bar — or open the <strong>⋮</strong> menu → <strong>Cast, save and share</strong> → <strong>Install page as app</strong>.', 'Click <strong>Install</strong>.'];
     modal(`<div class="card-head"><span class="section-icon">${icon('download')}</span><div><h2>Install Bluxury WhatsApp AI</h2><p>Use it like an app, straight from your ${ios || android ? 'home screen' : 'desktop'}.</p></div></div>
       <div class="card-body"><ol class="install-steps">${steps.map((x) => `<li>${x}</li>`).join('')}</ol></div>
       <div class="modal-foot"><button class="btn primary" data-close>Got it</button></div>`);
