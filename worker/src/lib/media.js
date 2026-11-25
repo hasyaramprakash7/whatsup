@@ -83,7 +83,7 @@ async function cleanUp(env, text, voiceLanguage, context) {
  * 3) Whisper's own confidence decides: garbled → unclear (the bot asks them to type or resend — it never guesses);
  *    clear → the AI fixes the spelling and adds the English meaning, which the bot and the team can read.
  */
-async function transcribe(env, bytes, voiceLanguage = 'te', context = '') {
+async function transcribe(env, bytes, voiceLanguage = 'te', context = '', customerLanguage = null) {
   if (!env.AI || bytes.byteLength > MAX_TRANSCRIBE_BYTES) return { transcript: '' };
   let b64 = ''; const u8 = new Uint8Array(bytes);
   for (let i = 0; i < u8.length; i += 0x8000) b64 += String.fromCharCode(...u8.subarray(i, i + 0x8000));
@@ -91,7 +91,10 @@ async function transcribe(env, bytes, voiceLanguage = 'te', context = '') {
   const clean = (r) => String(r?.text || '').replace(/\s+/g, ' ').trim().slice(0, 2000);
   const first = await runAi(env, WHISPER, { audio, task: 'transcribe', vad_filter: true });
   const lang = first?.transcription_info?.language; const sure = Number(first?.transcription_info?.language_probability ?? 1);
-  if (!voiceLanguage || voiceLanguage === 'auto' || ((lang === 'en' || lang === 'hi') && sure >= 0.6) || ['en', 'hi'].includes(voiceLanguage)) {
+  // A customer we know speaks the local language: Hindi is never kept (Telugu came out in Hindi letters), English only when very clear.
+  const local = customerLanguage && customerLanguage === voiceLanguage;
+  const keepAsHeard = local ? lang === 'en' && sure >= 0.85 : (lang === 'en' || lang === 'hi') && sure >= 0.6;
+  if (!voiceLanguage || voiceLanguage === 'auto' || keepAsHeard || ['en', 'hi'].includes(voiceLanguage)) {
     const c = confidence(first);
     return c != null && c < UNCLEAR_LOGPROB ? { unclear: true } : { transcript: clean(first) };
   }
@@ -109,7 +112,7 @@ async function transcribe(env, bytes, voiceLanguage = 'te', context = '') {
  * Returns { key, mime, size, filename, transcript } or null. Never throws: a failure just means the
  * Inbox shows "could not load" for that file.
  */
-export async function saveInboundMedia(env, { tenantId, accessToken, message, voiceLanguage, context }) {
+export async function saveInboundMedia(env, { tenantId, accessToken, message, voiceLanguage, context, customerLanguage }) {
   const t = message?.type;
   const m = message?.[t];
   if (!MEDIA_TYPES.includes(t) || !m?.id || !env.MEDIA) return null;
@@ -125,7 +128,7 @@ export async function saveInboundMedia(env, { tenantId, accessToken, message, vo
     let transcript = '';
     if (t === 'audio' || t === 'voice') {
       // If the speech engine fails or is too slow, treat it as unclear: the customer is asked to type or resend.
-      const heard = await transcribe(env, bytes, voiceLanguage, context).catch((err) => { console.warn('[Media] transcription failed:', err.message); return { unclear: true }; });
+      const heard = await transcribe(env, bytes, voiceLanguage, context, customerLanguage).catch((err) => { console.warn('[Media] transcription failed:', err.message); return { unclear: true }; });
       transcript = heard.transcript || '';
       if (heard.unclear) return { key, mime, size: bytes.byteLength, filename: m.filename || null, transcript: '', unclear: true };
     }

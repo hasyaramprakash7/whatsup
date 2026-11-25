@@ -66,7 +66,8 @@ export class ConversationDO extends DurableObject {
     let msg = message;
     if (!exists && MEDIA_TYPES.includes(message.type)) {
       // Photos, voice notes, videos and documents are copied to R2 so the Inbox can show and play them.
-      const saved = await saveInboundMedia(this.env, { tenantId, accessToken: await tenantAccessToken(this.env, tenant), message, voiceLanguage: tenant.ai?.voiceLanguage || 'te', context: `${tenant.profile?.displayName || tenant.businessName} (${String(tenant.industry || 'business').replace(/_/g, ' ')})` });
+      const known = await getLead(this.env, tenantId, from).catch(() => null); // their language, if we know it
+      const saved = await saveInboundMedia(this.env, { tenantId, accessToken: await tenantAccessToken(this.env, tenant), message, voiceLanguage: tenant.ai?.voiceLanguage || 'te', customerLanguage: known?.language || null, context: `${tenant.profile?.displayName || tenant.businessName} (${String(tenant.industry || 'business').replace(/_/g, ' ')})` });
       if (saved) msg = { ...message, _media: saved };
     }
     const lead = exists ? await getLead(this.env, tenantId, from) : (await recordInbound(this.env, tenantId, from, msg, profileName)).lead;

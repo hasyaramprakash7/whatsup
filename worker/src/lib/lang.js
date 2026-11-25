@@ -64,6 +64,8 @@ export const UI = {
     voiceUnclear: "Sorry, I couldn't hear that voice note clearly 🙏 Could you please type it, or send it again speaking a little slowly?",
     voiceUnclearAgain: "Sorry, I still couldn't hear that clearly 🙏 Please type your message — I'll reply right away.",
     voiceRetry: "Sorry, I couldn't catch that voice note clearly 🙏 Could you please type it, or send the voice note again speaking a little slowly?",
+    chooseBelow: 'Please choose below 👇',
+    timeNoted: "Sure! 👍 I've noted your preferred time — I'll confirm it with you in a moment. First, please answer this:",
   },
   te: {
     chooseLanguage: '🌐 Please choose your language\n🌐 దయచేసి మీ భాషను ఎంచుకోండి',
@@ -88,6 +90,8 @@ export const UI = {
     voiceUnclear: 'క్షమించండి, ఆ వాయిస్ నోట్ స్పష్టంగా వినిపించలేదు 🙏 దయచేసి టైప్ చేయండి, లేదా కొంచెం నెమ్మదిగా మాట్లాడి మళ్ళీ పంపండి.',
     voiceUnclearAgain: 'క్షమించండి, ఇంకా స్పష్టంగా వినిపించలేదు 🙏 దయచేసి మీ మెసేజ్ టైప్ చేయండి — వెంటనే జవాబిస్తాం.',
     voiceRetry: 'క్షమించండి, ఆ వాయిస్ నోట్ స్పష్టంగా వినిపించలేదు 🙏 దయచేసి టైప్ చేయండి, లేదా కొంచెం నెమ్మదిగా మాట్లాడి మళ్ళీ పంపండి.',
+    chooseBelow: 'దయచేసి కింద ఎంచుకోండి 👇',
+    timeNoted: 'తప్పకుండా! 👍 మీకు నచ్చిన సమయం నోట్ చేసుకున్నాం — కొంచెం సేపట్లో కన్ఫర్మ్ చేస్తాం. ముందుగా దీనికి జవాబు ఇవ్వండి:',
   },
 };
 export const ui = (lang) => UI[lang] || UI.en;

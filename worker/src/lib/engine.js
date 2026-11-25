@@ -109,11 +109,14 @@ export class Conversation {
     return out;
   }
   /** Remembers the customer's language on their lead (a clear signal or their own choice). */
-  async setLang(lang) {
+  async setLang(lang, { chosen = false } = {}) {
+    if (chosen) this.state.langLocked = true;
     if (!lang || lang === this.lang) return;
     this.lang = lang;
     await this.saveLead({ set: { language: lang } });
   }
+  /** A fresh start that keeps the customer's language choice. */
+  restart() { this.state = { ...freshState(), langLocked: !!this.state.langLocked }; }
   /** "Please choose your language" with English / తెలుగు buttons (only when we can't tell). */
   async askLanguage() {
     this.state.awaitingLang = true;
@@ -126,7 +129,7 @@ export class Conversation {
     if (!flowOn) return this.touch();
     const current = this.state.stepId && stepById(this.flow, this.state.stepId);
     if (current && !this.state.done) { await this.ask(current); return this.touch(); }
-    this.state = freshState();
+    this.restart();
     await this.raiseStatus('ENGAGED');
     await this.advance(null);
     return this.touch();
@@ -239,11 +242,13 @@ export class Conversation {
 
     // Language: the customer's choice (buttons, or typing "Telugu"/"English"), or a clear signal in what they wrote
     // (Telugu letters, Tenglish words, an English sentence). "hi", "ok", numbers and button taps keep the current one.
-    if (iid === 'LANG_en' || iid === 'LANG_te') { await this.setLang(iid.slice(5)); return this.continueInLanguage(); }
+    if (iid === 'LANG_en' || iid === 'LANG_te') { await this.setLang(iid.slice(5), { chosen: true }); return this.continueInLanguage(); }
     const said = message.type === 'text' ? detectLanguage(textOf(message)) : null;
-    if (said) {
+    if (said?.explicit) { await this.setLang(said.lang, { chosen: true }); return this.continueInLanguage(); }
+    if (said && !this.state.langLocked) {
+      // Not chosen yet: follow what they write (Telugu letters, Tenglish, an English sentence).
       await this.setLang(said.lang);
-      if (said.explicit || this.state.awaitingLang) return this.continueInLanguage();
+      if (this.state.awaitingLang) return this.continueInLanguage();
     } else if (this.state.awaitingLang && !isGreeting(message)) {
       // Didn't pick a language and nothing tells us: carry on in English rather than asking again (each message costs).
       await this.setLang('en');
@@ -285,8 +290,8 @@ export class Conversation {
       if (isGreeting(message)) {
         const idle = Date.now() - (this.state.updatedAt || 0) > RESTART_AFTER_MS;
         const current = this.state.stepId && stepById(this.flow, this.state.stepId);
-        if (current && !this.state.done && !idle) { await this.ask(current); return this.touch(); } // carry on where they were
-        this.state = freshState();
+        if (current && !this.state.done && !idle) { await this.ask(current, { short: true }); return this.touch(); } // carry on where they were
+        this.restart();
         if (!this.lang) { await this.askLanguage(); return this.touch(); } // first time and we can't tell: ask once
         await this.raiseStatus('ENGAGED');
         await this.advance(null);
@@ -303,7 +308,10 @@ export class Conversation {
       }
 
       const step = stepById(this.flow, this.state.stepId);
-      if (!step) { this.state = freshState(); await this.advance(null); return this.touch(); }
+      if (!step) { this.restart(); await this.advance(null); return this.touch(); }
+
+      // "ok", "👍", "సరే" while a question waits: show its buttons again (no AI needed), so they can carry on.
+      if (isAck(message) && message.type !== 'reaction') { await this.ask(step, { short: true }); return this.touch(); }
 
       const r = step.type === 'question' && step.input === 'location' ? await this.answerLocation(message) : this.answer(step, message);
       if (r?.prompted) { // "Other location": ask for a pin or a pincode, stay on this step
@@ -341,10 +349,11 @@ export class Conversation {
 
   // ---------- steps ----------
   /** Sends the question for a step that waits for an answer. */
-  async ask(step) {
-    this.state.askedAt = Date.now(); this.state.askedStep = step.id;
+  async ask(step, { short = false } = {}) {
+    this.state.askedAt = Date.now(); this.state.askedStep = step.id; this.state.aiSinceAsk = 0;
     step = this.L(step);
-    const text = this.t(step.text);
+    // A repeat of a question with buttons/list: a short line instead of the whole text again.
+    const text = short && (step.type === 'choice' || step.type === 'slots' || step.input === 'location') ? this.U.chooseBelow : this.t(step.text);
     if (step.type === 'choice') {
       const photo = (await this.item(step.imageItemId))?.imageUrl || null;
       step = await this.nearestOptions(step);
@@ -450,6 +459,11 @@ export class Conversation {
     while (step) {
       if (step.type === 'send') { await this.sendContent(step); step = stepAfter(this.flow, step); continue; }
       if (step.type === 'finish') { await this.finish(step); return; }
+      if (step.type === 'slots' && this.state.wantTime) { // the time they asked for earlier comes first
+        const req = checkLocalTime(this.state.wantTime, new Date(), this.visitHours(step));
+        this.state.wantTime = null;
+        if (req) { this.state.stepId = step.id; this.state.unexpected = 0; await this.offerTime(step, req); return; }
+      }
       await this.ask(step);
       this.state.stepId = step.id;
       this.state.unexpected = 0;
@@ -594,10 +608,26 @@ export class Conversation {
       const req = parseRequestedTime(textOf(message), new Date(), this.visitHours(step));
       if (req) return this.offerTime(step, req);
     }
+    // "Book me today 4 PM" before the time step: remember it, say so, and carry on with this question.
+    const visitStep = this.visitStep();
+    if (step.type !== 'slots' && visitStep && message.type === 'text' && BOOK_INTENT.test(textOf(message))) {
+      const req = parseRequestedTime(textOf(message), new Date(), this.visitHours(visitStep));
+      if (req && !req.error) {
+        this.state.wantTime = `${new Date(req.at.getTime() + 330 * 60000).toISOString().slice(0, 16).replace('T', ' ')}`;
+        await this.bot.text(this.phone, this.U.timeNoted);
+        return this.ask(step, { short: true });
+      }
+    }
     if (!invalid && await this.aiAvailable(message)) {
       const pending = this.pendingFor(step);
       const d = await aiDecide(this.env, { tenant: this.tenant, aiCfg: this.aiCfg, pending, catalog: await this.catalog(), customerPlace: this.customerPlace(), history: await recentTurns(this.env, this.tenant._id, this.phone), language: this.lang });
-      if (d?.action === 'select') {
+      // On the time step the AI may have misheard ("today 4 PM" → "Tomorrow 11 AM"): never book from its guess —
+      // offer the time it understood as a ✅ button, so the customer confirms it with one tap.
+      if (d?.action === 'select' && step.type === 'slots') {
+        const at = parseSlotId(d.optionId);
+        if (at && at.getTime() > Date.now()) return this.offerTime(step, { at });
+      }
+      if (d?.action === 'select' && step.type !== 'slots') {
         const fake = { type: 'interactive', interactive: { type: 'button_reply', button_reply: { id: d.optionId } } };
         const r = step.input === 'location' ? await this.answerLocation(fake) : this.answer(step, fake);
         if (r && !r.invalid && !r.passed && !r.prompted && !r.location) return this.accept(step, r);
@@ -607,10 +637,19 @@ export class Conversation {
         const req = checkLocalTime(d.requestedTime, new Date(), this.visitHours(step));
         if (req) return this.offerTime(step, req);
       }
+      // Asked for a time before reaching the time step ("book today 4 PM" while choosing an area): keep it and
+      // offer exactly that time when the time step comes — never hand the chat over for it.
+      if (d?.requestedTime && step.type !== 'slots' && this.visitStep()) {
+        this.state.wantTime = d.requestedTime;
+        if (d.action === 'handoff') { await this.ai.text(this.phone, this.U.timeNoted); return this.ask(step, { short: true }); }
+      }
       if (d?.action === 'answer') {
         await this.sendAi(d);
-        // The question's buttons are still just above: repeat it only if it was asked a while ago.
-        if (this.state.askedStep !== step.id || Date.now() - (this.state.askedAt || 0) > REASK_AFTER_MS) return this.ask(step);
+        // Keep the way forward in reach: after an AI answer the step's buttons come again (short line), unless
+        // they are right above (the question was the last thing sent). A different step is asked in full.
+        this.state.aiSinceAsk = (this.state.aiSinceAsk || 0) + 1;
+        if (this.state.askedStep !== step.id) return this.ask(step);
+        if (this.state.aiSinceAsk >= 2 || Date.now() - (this.state.askedAt || 0) > REASK_AFTER_MS || d.itemIds?.length) return this.ask(step, { short: true });
         return null;
       }
       if (d?.action === 'handoff') return (await this.unclearVoice(message)) || this.handoff(message, d.reply);
