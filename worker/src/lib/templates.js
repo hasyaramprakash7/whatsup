@@ -44,7 +44,7 @@ export const TEMPLATES = [
         question('name', 'name', 'Name', 'May I know your name for the visit pass? 😊', 'name'),
         slots('visit', 'visit', 'Site visit', 'Early-bird pricing is locked via an in-person Experience Centre visit. Select a convenient time slot:', WEEKEND),
         send('pin', 'location'),
-        finish('done', '✅ *VIP Site Visit Pass Confirmed!*\n\n• *Name:* {name}\n• *Project:* {project}\n• *Area:* {area}\n• *Scheduled Slot:* {visit}\n• *Site Address:* {address}\n\nOur Senior Property Advisor will welcome you at the reception. Show this message at the security gate for reserved parking.'),
+        finish('done', '✅ *VIP Site Visit Pass Confirmed!*\n\n• *Name:* {name}\n• *Project:* {project}\n• *Area:* {area}\n• *Scheduled Slot:* {visit}\n• *Site Address:* {address}\n\n📞 Our property advisor will call you shortly to confirm your visit.\n\nOur Senior Property Advisor will welcome you at the reception. Show this message at the security gate for reserved parking.'),
       ],
       messages: { ...DEFAULT_MESSAGES, completed: 'Our Property Consultant is reviewing your visit file for *{business}*. For immediate help, call: +{adminPhone}.' },
     },
