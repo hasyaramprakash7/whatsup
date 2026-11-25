@@ -149,6 +149,7 @@ export function validateProfile(input) {
   return { value, errors };
 }
 
+export const VOICE_LANGUAGES = ['te', 'ta', 'kn', 'ml', 'mr', 'gu', 'bn', 'pa', 'or', 'ur', 'hi', 'en', 'auto'];
 export function validateAi(input) {
   const errors = [];
   const a = input && typeof input === 'object' ? input : {};
@@ -163,6 +164,8 @@ export function validateAi(input) {
     hoursFrom: str(a.hoursFrom) || '09:00',
     hoursTo: str(a.hoursTo) || '21:00',
     days: Array.isArray(a.days) ? [...new Set(a.days.map(Number).filter((d) => Number.isInteger(d) && d >= 0 && d <= 6))].sort() : [0, 1, 2, 3, 4, 5, 6],
+    // The local language customers speak in voice notes (besides English and Hindi), so they are written down correctly.
+    voiceLanguage: VOICE_LANGUAGES.includes(a.voiceLanguage) ? a.voiceLanguage : 'te',
   };
   const HHMM = /^([01]\d|2[0-3]):[0-5]\d$/;
   if (!HHMM.test(value.hoursFrom) || !HHMM.test(value.hoursTo)) errors.push('AI hours: use times like 09:00 and 21:00.');

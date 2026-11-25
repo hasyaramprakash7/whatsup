@@ -3,7 +3,7 @@
 import { fill, normalizePhone } from './text.js';
 import { stepById, stepAfter } from './flow.js';
 import { DEFAULT_MESSAGES } from './templates.js';
-import { buildVisitSlots, parseSlotId, formatSlotLong, formatSlotShort, withinAiHours, parseRequestedTime, clockLabel } from './slots.js';
+import { buildVisitSlots, parseSlotId, formatSlotLong, formatSlotShort, withinAiHours, parseRequestedTime, checkLocalTime, clockLabel } from './slots.js';
 import { aiDecide } from './ai.js';
 import { upsertLead, recentTurns, takeAiReply, listCatalog, itemCaption, layoutOf } from './db.js';
 import { publish } from './chatlog.js';
@@ -62,6 +62,16 @@ export class Conversation {
     this.flow.steps = this.flow.steps || [];
     this.messages = { ...DEFAULT_MESSAGES, ...(this.flow.messages || {}) };
     this.aiCfg = ctx.tenant.ai || {};
+    // Photos, brochures and map pins take WhatsApp longer to deliver than text, so a question sent right after
+    // can land ABOVE the photo on the customer's phone. Meta's advice: wait for "delivered" before the next one.
+    for (const c of [this.bot, this.ai]) {
+      if (!c || c._ordered) continue;
+      for (const k of ['image', 'document', 'location']) {
+        const send = c[k]?.bind(c); if (!send) continue;
+        c[k] = async (...args) => { const res = await send(...args); await this.waitDelivered(res); return res; };
+      }
+      c._ordered = true;
+    }
     if (!this.state || Date.now() - (this.state.updatedAt || 0) > STATE_TTL_MS) this.state = freshState();
   }
 
@@ -245,6 +255,18 @@ export class Conversation {
   }
 
   touch() { this.state.updatedAt = Date.now(); return this.state; }
+
+  /** Waits (max 6 s) until WhatsApp reports this message delivered/read — the status webhook updates its row. */
+  async waitDelivered(res, maxMs = 6000) {
+    const id = res?.messages?.[0]?.id;
+    if (!id || !this.env?.DB) return;
+    const until = Date.now() + maxMs;
+    while (Date.now() < until) {
+      await new Promise((r) => setTimeout(r, 400));
+      const row = await this.env.DB.prepare('SELECT status FROM messages WHERE tenant_id = ? AND wa_message_id = ?').bind(this.tenant._id, id).first().catch(() => null);
+      if (row && ['delivered', 'read', 'failed'].includes(String(row.status).toLowerCase())) return;
+    }
+  }
 
   // ---------- steps ----------
   /** Sends the question for a step that waits for an answer. */
@@ -502,6 +524,11 @@ export class Conversation {
         const r = step.input === 'location' ? await this.answerLocation(fake) : this.answer(step, fake);
         if (r && !r.invalid && !r.passed && !r.prompted && !r.location) return this.accept(step, r);
       }
+      // "రేపు మూడు గంటలకి…": the AI understood a day and time in any language → one-tap booking of it.
+      if (d?.requestedTime && step.type === 'slots') {
+        const req = checkLocalTime(d.requestedTime, new Date(), this.visitHours(step));
+        if (req) return this.offerTime(step, req);
+      }
       if (d?.action === 'answer') {
         await this.sendAi(d);
         // The question's buttons are still just above: repeat it only if it was asked a while ago.
@@ -543,6 +570,11 @@ export class Conversation {
     if (this.aiCfg.answerAfterFlow !== false && await this.aiAvailable(message)) {
       const d = await aiDecide(this.env, { tenant: this.tenant, aiCfg: this.aiCfg, pending: null, catalog: await this.catalog(), customerPlace: this.customerPlace(), history: await recentTurns(this.env, this.tenant._id, this.phone) });
       if (d?.action === 'handoff') return this.handoff(message, d.reply);
+      const visitStep = this.visitStep();
+      if (d?.requestedTime && visitStep) {
+        const req = checkLocalTime(d.requestedTime, new Date(), this.visitHours(visitStep));
+        if (req) { this.reopenVisit(visitStep); return this.offerTime(visitStep, req); }
+      }
       if (d?.reply || d?.sendDocument) return this.sendAi(d);
     }
     if (!this.state.done) return null;

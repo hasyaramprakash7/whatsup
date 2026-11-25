@@ -159,7 +159,19 @@ function parseRequestedTime(text, now = new Date(), { from = '09:00', to = '19:0
   if (at.getTime() > now.getTime() + MAX_DAYS_AHEAD * 24 * 3600 * 1000) return { at, error: 'far' };
   return { at };
 }
+/** "2026-11-26 15:00" (site-local, from the AI) → same answer shape as parseRequestedTime. */
+function checkLocalTime(str, now = new Date(), { from = '09:00', to = '19:00', leadMinutes = 60 } = {}) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{1,2}):(\d{2})$/.exec(String(str || '').trim());
+  if (!m) return null;
+  const at = fromLocal(+m[1], +m[2] - 1, +m[3], +m[4], +m[5]);
+  if (Number.isNaN(at.getTime())) return null;
+  const mins = +m[4] * 60 + +m[5];
+  if (at.getTime() < now.getTime() + leadMinutes * 60000) return { at, error: 'soon' };
+  if (mins < hm(from) || mins > hm(to)) return { at, error: 'hours' };
+  if (at.getTime() > now.getTime() + MAX_DAYS_AHEAD * 24 * 3600 * 1000) return { at, error: 'far' };
+  return { at };
+}
 /** "9 AM" for "09:00". */
 const clockLabel = (s) => { const v = hm(s); const h = Math.floor(v / 60); const m = v % 60; return `${h % 12 || 12}${m ? `:${String(m).padStart(2, '0')}` : ''} ${h < 12 ? 'AM' : 'PM'}`; };
 
-export { buildVisitSlots, parseSlotId, formatSlotShort, formatSlotLong, DEFAULT_PLAN, parseRequestedTime, clockLabel };
+export { buildVisitSlots, parseSlotId, formatSlotShort, formatSlotLong, DEFAULT_PLAN, parseRequestedTime, checkLocalTime, clockLabel };

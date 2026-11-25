@@ -11,6 +11,7 @@ const RESPONSE_SCHEMA = {
     reply: { type: 'string' },
     item_ids: { type: 'array', items: { type: 'string' } },
     send_document: { type: 'boolean' },
+    requested_time: { type: ['string', 'null'] },
   },
   required: ['action', 'reply'],
 };
@@ -66,15 +67,15 @@ function systemPrompt(tenant, aiCfg, pending, catalog, customerPlace = null, off
       ? `CURRENT STEP: the customer was asked: "${pending.question}"\nThe valid options are:\n${pending.options.map((o) => `- ${o.id}: ${o.title}`).join('\n')}\n`
         + `Today is ${todayLabel(offset)}. `
         + 'If the customer\'s message clearly picks one of these options (in any wording or language), use action "select" with that option_id and a short acknowledgement as reply. '
-        + (pending.slots ? 'These options are appointment times. Only select one if its day AND time match what the customer asked for. If they want a different day or time, do NOT select and do NOT refuse: use action "answer" and ask them to type the exact day and time they prefer (for example "Saturday 5 PM") so we can book it for them. ' : '')
+        + (pending.slots ? 'These options are appointment times. Only select one if its day AND time match what the customer asked for. If they ask for a different day or time (in any language, e.g. Telugu "repu moodu gantalaki" = tomorrow at 3), do NOT select and do NOT refuse: use action "answer", set "requested_time" to that day and time as "YYYY-MM-DD HH:MM" (24-hour, local time; times 1–8 without AM/PM mean PM) and a short reply. If they give a day but no time, ask what time suits them. ' : '')
         + (pending.slots
           ? 'If they ask a question instead, use action "answer": answer it, then end with ONE short sentence inviting them to book — tap one of the times above, or type the day and time that suits them (for example "today 5 PM"). Booking the visit is the goal of this chat.'
           : 'If they ask a question instead, use action "answer": answer it, then gently ask them to answer the question above (do not list the options).')
         + (pending.slots ? `
 Use "select" only when BOTH the day and the time the customer asked for match that option exactly (e.g. "tomorrow 4pm"). Never pick a different day or time for them.` : '')
-      : 'The customer has finished the guided conversation. Answer their questions with action "answer". If they show interest in a product or project, end by inviting them to book a visit: they can type the day and time they prefer (for example "Saturday 11 AM").',
+      : 'The customer has finished the guided conversation. Answer their questions with action "answer". If they show interest in a product or project, end by inviting them to book a visit: they can type the day and time they prefer (for example "Saturday 11 AM"). If they ask to visit or book at a specific day and time (in any language), set "requested_time" to it as "YYYY-MM-DD HH:MM" (24-hour, local time; 1–8 without AM/PM mean PM). Today is ' + todayLabel(offset) + '.',
     '',
-    'Respond with JSON only: {"action": "answer" | "select" | "handoff", "option_id": string or null, "reply": string, "item_ids": string[], "send_document": boolean}.',
+    'Respond with JSON only: {"action": "answer" | "select" | "handoff", "option_id": string or null, "reply": string, "item_ids": string[], "send_document": boolean, "requested_time": "YYYY-MM-DD HH:MM" or null}.',
   ].filter((l) => l !== '').join('\n');
 }
 
@@ -133,5 +134,6 @@ export async function aiDecide(env, { tenant, aiCfg, pending, history, catalog =
   // "P2" → the real item id; ignore anything that isn't in the list.
   const itemIds = (Array.isArray(out.item_ids) ? out.item_ids : [])
     .map((x) => catalog[Number(String(x).replace(/\D/g, '')) - 1]?._id).filter(Boolean).slice(0, 10);
-  return { action: out.action, optionId, reply, itemIds: [...new Set(itemIds)], sendDocument };
+  const requestedTime = /^\d{4}-\d{2}-\d{2}[ T]\d{1,2}:\d{2}$/.test(String(out.requested_time || '').trim()) ? String(out.requested_time).trim() : null;
+  return { action: out.action, optionId, reply, itemIds: [...new Set(itemIds)], sendDocument, requestedTime };
 }

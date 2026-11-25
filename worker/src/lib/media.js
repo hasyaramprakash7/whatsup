@@ -27,13 +27,24 @@ async function graphJson(env, accessToken, path) {
   return data;
 }
 
-/** Plain text from Whisper's answer, or '' when it heard nothing. */
-async function transcribe(env, bytes) {
+/**
+ * Plain text from Whisper's answer, or '' when it heard nothing.
+ * Indian languages sound alike to Whisper: Telugu speech often comes back as Tamil or Gujarati text.
+ * So: listen once with no hint; if it hears English, Hindi or the business's own customer language, keep it.
+ * Anything else (or a shaky guess) is heard again as the customer language (default Telugu).
+ */
+async function transcribe(env, bytes, voiceLanguage = 'te') {
   if (!env.AI || bytes.byteLength > MAX_TRANSCRIBE_BYTES) return '';
   let b64 = ''; const u8 = new Uint8Array(bytes);
   for (let i = 0; i < u8.length; i += 0x8000) b64 += String.fromCharCode(...u8.subarray(i, i + 0x8000));
-  const res = await env.AI.run(WHISPER, { audio: btoa(b64), task: 'transcribe' });
-  return String(res?.text || '').replace(/\s+/g, ' ').trim().slice(0, 2000);
+  const audio = btoa(b64);
+  const clean = (r) => String(r?.text || '').replace(/\s+/g, ' ').trim().slice(0, 2000);
+  const first = await env.AI.run(WHISPER, { audio, task: 'transcribe' });
+  const lang = first?.transcription_info?.language; const sure = Number(first?.transcription_info?.language_probability ?? 1);
+  if (!voiceLanguage || voiceLanguage === 'auto' || !lang || lang === voiceLanguage || ((lang === 'en' || lang === 'hi') && sure >= 0.6)) return clean(first);
+  const again = await env.AI.run(WHISPER, { audio, task: 'transcribe', language: voiceLanguage }).catch(() => null);
+  console.log(`[Media] voice note heard as "${lang}" (${sure.toFixed(2)}), transcribed again as "${voiceLanguage}"`);
+  return clean(again) || clean(first);
 }
 
 /**
@@ -41,7 +52,7 @@ async function transcribe(env, bytes) {
  * Returns { key, mime, size, filename, transcript } or null. Never throws: a failure just means the
  * Inbox shows "could not load" for that file.
  */
-export async function saveInboundMedia(env, { tenantId, accessToken, message }) {
+export async function saveInboundMedia(env, { tenantId, accessToken, message, voiceLanguage }) {
   const t = message?.type;
   const m = message?.[t];
   if (!MEDIA_TYPES.includes(t) || !m?.id || !env.MEDIA) return null;
@@ -56,7 +67,7 @@ export async function saveInboundMedia(env, { tenantId, accessToken, message }) 
     await env.MEDIA.put(key, bytes, { httpMetadata: { contentType: mime, cacheControl: 'private, max-age=31536000, immutable' } });
     let transcript = '';
     if (t === 'audio' || t === 'voice') {
-      transcript = await transcribe(env, bytes).catch((err) => { console.warn('[Media] transcription failed:', err.message); return ''; });
+      transcript = await transcribe(env, bytes, voiceLanguage).catch((err) => { console.warn('[Media] transcription failed:', err.message); return ''; });
     }
     return { key, mime, size: bytes.byteLength, filename: m.filename || null, transcript };
   } catch (err) {

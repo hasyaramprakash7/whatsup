@@ -2268,6 +2268,9 @@
               <label class="field"><span>Extra instructions <span class="muted">(optional)</span></span><textarea name="instructions" rows="4" maxlength="2000" placeholder="e.g. Always mention our free parking. Never discuss discounts — hand over to the team instead.">${esc(a.instructions || '')}</textarea></label>
               <div class="grid-2"><label class="field"><span>Max AI replies per day</span><input class="input" name="dailyLimit" type="number" min="0" max="20000" value="${esc(a.dailyLimit ?? 300)}" /><span class="hint">Controls cost. After this the bot uses its normal replies.</span></label>
                 <label class="field"><span>After the flow is finished</span><label class="switch" style="margin-top:8px"><input type="checkbox" name="answerAfterFlow" ${a.answerAfterFlow !== false ? 'checked' : ''} /><span class="track"></span>Keep answering questions</label></label></div>
+              <label class="field"><span>Language your customers speak in voice notes</span>
+                <select name="voiceLanguage">${[['te', 'Telugu'], ['ta', 'Tamil'], ['kn', 'Kannada'], ['ml', 'Malayalam'], ['mr', 'Marathi'], ['gu', 'Gujarati'], ['bn', 'Bengali'], ['pa', 'Punjabi'], ['or', 'Odia'], ['ur', 'Urdu'], ['hi', 'Hindi only'], ['en', 'English only'], ['auto', 'Detect automatically']].map(([v, l]) => `<option value="${v}" ${(a.voiceLanguage || 'te') === v ? 'selected' : ''}>${l}${v.length === 2 && !['hi', 'en'].includes(v) ? ' (plus English & Hindi)' : ''}</option>`).join('')}</select>
+                <span class="hint">Voice notes are written down in this language. Indian languages sound alike to the speech engine, so this stops Telugu being written as Tamil or Gujarati.</span></label>
               <div class="field"><span>When the AI answers</span>
                 <div class="seg" role="radiogroup" style="display:flex;gap:16px;margin-top:6px">
                   <label class="row" style="gap:6px"><input type="radio" name="schedule" value="always" ${a.schedule !== 'hours' ? 'checked' : ''} />24/7 (always)</label>
@@ -2289,7 +2292,7 @@
               <div id="ai-a"></div></div></div>
         </div></div></div>`;
     const form = $('#ai-form');
-    const readForm = () => ({ enabled: $('#ai-enabled').checked, tone: form.tone.value, instructions: form.instructions.value, dailyLimit: Number(form.dailyLimit.value), answerAfterFlow: form.answerAfterFlow.checked, schedule: form.querySelector('[name=schedule]:checked')?.value || 'always', hoursFrom: form.hoursFrom.value, hoursTo: form.hoursTo.value, days: [...form.querySelectorAll('[name=days]:checked')].map((x) => Number(x.value)) });
+    const readForm = () => ({ enabled: $('#ai-enabled').checked, tone: form.tone.value, instructions: form.instructions.value, dailyLimit: Number(form.dailyLimit.value), answerAfterFlow: form.answerAfterFlow.checked, voiceLanguage: form.voiceLanguage.value, schedule: form.querySelector('[name=schedule]:checked')?.value || 'always', hoursFrom: form.hoursFrom.value, hoursTo: form.hoursTo.value, days: [...form.querySelectorAll('[name=days]:checked')].map((x) => Number(x.value)) });
     form.addEventListener('input', () => { state.aiDraft.draft = readForm(); state.aiDraft.dirty = true; });
     form.addEventListener('change', (e) => { if (e.target.name === 'schedule') $('#ai-hours').hidden = e.target.value !== 'hours'; });
     const save = async (okMsg) => {
