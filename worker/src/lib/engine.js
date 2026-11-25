@@ -259,7 +259,9 @@ export class Conversation {
     // Language: the customer's choice (buttons, or typing "Telugu"/"English"), or a clear signal in what they wrote
     // (Telugu letters, Tenglish words, an English sentence). "hi", "ok", numbers and button taps keep the current one.
     if (iid === 'LANG_en' || iid === 'LANG_te') { await this.setLang(iid.slice(5), { chosen: true }); return this.continueInLanguage(); }
-    const said = message.type === 'text' ? detectLanguage(textOf(message)) : null;
+    // A name ("Sunil garu") says nothing about the language they want — don't switch on it.
+    const waitingStep = this.state.stepId && stepById(this.flow, this.state.stepId);
+    const said = message.type === 'text' && waitingStep?.input !== 'name' ? detectLanguage(textOf(message)) : null;
     if (said?.explicit) { await this.setLang(said.lang, { chosen: true }); return this.continueInLanguage(); }
     if (said && !this.state.langLocked) {
       // Not chosen yet: follow what they write (Telugu letters, Tenglish, an English sentence).
@@ -569,7 +571,7 @@ export class Conversation {
         kind: 'booking',
         headline: this.state.rescheduling ? 'Visit rescheduled' : 'New booking',
         details: fields.map(([l, v]) => `${l}: ${v}`).join(' · ') || 'Completed the conversation',
-        text: `🎉 *NEW ${String(this.tenant.profile?.displayName || this.tenant.businessName).toUpperCase()} LEAD*\n\n• *Name:* ${this.lead.name || '—'}\n• *Phone:* +${this.phone}\n${fields.map(([l, v]) => `• *${l}:* ${v}`).join('\n')}`,
+        text: `${this.state.rescheduling ? '🔁 *VISIT RESCHEDULED*' : `🎉 *NEW ${String(this.tenant.profile?.displayName || this.tenant.businessName).toUpperCase()} LEAD*`}\n\n• *Name:* ${this.lead.name || '—'}\n• *Phone:* +${this.phone}\n${fields.map(([l, v]) => `• *${l}:* ${v}`).join('\n')}`,
       });
     }
     this.state.rescheduling = false;

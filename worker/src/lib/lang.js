@@ -11,7 +11,7 @@ const TENGLISH = new Set(('nenu naaku naku meeru miru meeku miku manaki kavali k
   + 'elaa unnaru unnav unnava cheyandi cheyyandi chey cheyi cheyocha cheyochaa cheyyocha cheyagalara cheyagalava chestara chesthara chesthaaru '
   + 'repu eeroju eroju ivala ivvala ellundi gantalaki gantalaku gantaki gantaku gantala emaina enti endi entha enta dhara dara chupinchandi '
   + 'chupinchu pampandi pampinchandi pampinchu ravacha ravocha raavacha vasthanu vastanu vasta vachi chudali choodali chudocha chudochha '
-  + 'baagundi bagundi sare saree andi garu ekkada ikkada akkada evaru inka kuda kooda ippudu tarvata taruvata illu sthalam '
+  + 'baagundi bagundi sare saree ekkada ikkada akkada evaru inka kuda kooda ippudu tarvata taruvata illu sthalam '
   + 'namaskaram namaste namasthe dhanyavadalu thelugu telugulo matladandi cheppandi chepandi teliyadu telusu kada kadha '
   + 'okati rendu moodu mudu naalugu nalugu aidu ayidu aaru enimidi tommidi padi padakondu pannendu udayam sayantram saayantram madhyanam').split(' '));
 
