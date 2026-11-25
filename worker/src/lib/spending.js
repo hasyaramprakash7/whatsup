@@ -1,6 +1,6 @@
 // What WhatsApp messaging costs each business, from Meta's own pricing report (pricing_analytics on the WhatsApp
 // Business Account), plus our estimate for campaigns that are still sending. Meta has no way for another app to read
-// the remaining balance or add money, so the screen links to that account's Meta Billing page for top-ups.
+// the remaining balance, so the screen shows what was used.
 import { offsetMs } from './campaigns.js';
 
 const DAY = 86400000;
@@ -63,30 +63,6 @@ export function summarizePricing(points, { now = Date.now(), offset = '+05:30', 
     byPhone: [...byPhone.values()].map((x) => ({ ...x, cost: round(x.cost) })).sort((a, b) => b.cost - a.cost || b.volume - a.volume),
     days: [...byDay.entries()].map(([date, x]) => ({ date, cost: round(x.cost), volume: x.volume })),
   };
-}
-
-/** Meta adds 18% GST in India on top of the message prices; it comes out of the same balance. */
-export const GST = 0.18;
-
-/** Message cost (without tax) of the data points that start at or after `sinceMs`. */
-export const costSince = (points, sinceMs) => round((points || []).filter((p) => Number(p.start) * 1000 >= sinceMs).reduce((s, p) => s + (Number(p.cost) || 0), 0));
-
-/** The balance the owner typed from Meta Billing ("Available funds"), checked. */
-export function cleanBalance(b) {
-  if (b?.amount === null || b?.amount === '') return { value: null };
-  const n = Math.round(Number(b?.amount) * 100) / 100;
-  if (!Number.isFinite(n) || n < 0 || n > 10000000) return { error: 'Type the "Available funds" amount from Meta Billing, e.g. 89.81.' };
-  return { value: { amount: n, setAt: new Date().toISOString() } };
-}
-
-/**
- * The real balance exactly as shown in Meta Billing ("Available funds") when the owner copied it, and whether that is
- * already too little for the campaign messages still waiting (price + 18% GST). No estimate, no counting down.
- */
-export function balanceStatus(balance, { waitingCost = 0 } = {}) {
-  const amount = Number(balance.amount);
-  const needed = round((waitingCost || 0) * (1 + GST));
-  return { amount, seenAt: balance.setAt || null, needed, short: needed > 0 && amount < needed, empty: amount <= 0 };
 }
 
 /** The Meta Billing page of this WhatsApp account, where the owner adds money or changes the card. */

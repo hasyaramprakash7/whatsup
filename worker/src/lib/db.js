@@ -15,11 +15,10 @@ export function rowToTenant(r) {
     createdAt: r.created_at, updatedAt: r.updated_at,
     // never sent to clients; used internally to decrypt the WhatsApp token
     _tokenEnc: r.access_token_enc,
-    _appSecretEnc: r.app_secret_enc || null, // a business's own Meta app: its webhooks are signed with this secret
   };
 }
 /** Strips internal fields before sending to the dashboard. */
-export const publicTenant = (t) => { if (!t) return t; const { _tokenEnc, _appSecretEnc, ...rest } = t; return { ...rest, ownMetaApp: !!_appSecretEnc }; };
+export const publicTenant = (t) => { if (!t) return t; const { _tokenEnc, ...rest } = t; return rest; };
 
 export const getTenant = async (env, id) => rowToTenant(await env.DB.prepare('SELECT * FROM tenants WHERE id = ?').bind(id).first());
 export const getTenantByPhoneNumberId = async (env, pnid) => rowToTenant(await env.DB.prepare('SELECT * FROM tenants WHERE phone_number_id = ?').bind(pnid).first());
@@ -31,7 +30,7 @@ export async function listTenants(env, onlyId) {
 export const tenantAccessToken = (env, tenant) => decryptToken(env.TOKEN_ENCRYPTION_KEY, tenant._tokenEnc);
 
 const TENANT_COLS = {
-  businessName: 'business_name', industry: 'industry', phoneNumberId: 'phone_number_id', wabaId: 'waba_id', accessTokenEnc: 'access_token_enc', appSecretEnc: 'app_secret_enc',
+  businessName: 'business_name', industry: 'industry', phoneNumberId: 'phone_number_id', wabaId: 'waba_id', accessTokenEnc: 'access_token_enc',
   apiKeyHash: 'api_key_hash', adminNotificationPhone: 'admin_phone', tier: 'tier', isActive: 'is_active',
   profile: 'profile', flow: 'flow', ai: 'ai', templates: 'templates', sending: 'sending',
 };
