@@ -47,6 +47,9 @@
   // Workers AI for the assistant.
   "ai": { "binding": "AI" },
 
+  // Monitor: every 10 minutes check that customers get replies and alert the admin's phone if not.
+  "triggers": { "crons": ["*/10 * * * *"] },
+
   "vars": {
     "AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
     "GRAPH_API_VERSION": "v25.0",

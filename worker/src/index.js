@@ -10,6 +10,7 @@ import { sha256Hex, safeEqual, verifyMetaSignature, generateApiKey, encryptToken
 import { normalizePhone, isValidPhone, parseCsv, pickPhone, pickName, nowIso } from './lib/text.js';
 import { validateFlow, validateProfile, validateAi, flowFields } from './lib/flow.js';
 import { translateFlow } from './lib/lang.js';
+import { recordEvent, findProblems, runMonitor } from './lib/monitor.js';
 import { TEMPLATES, flowFromTemplate, getTemplate, personalizeFlow } from './lib/templates.js';
 import { WhatsAppClient } from './lib/whatsapp.js';
 import { outboundRecorder, publish } from './lib/chatlog.js';
@@ -55,6 +56,7 @@ const limited = async (binding, key) => { try { return binding ? !(await binding
 
 app.onError((err, c) => {
   console.error('[Worker] unhandled:', err.stack || err.message);
+  c.executionCtx?.waitUntil?.(recordEvent(c.env, 'server_error', `${c.req.method} ${c.req.path}: ${err.message}`));
   return fail(c, 500, 'Internal Server Error');
 });
 
@@ -774,4 +776,14 @@ app.get('/api/media/:tid/:file', tenantAccess(), async (c) => {
 
 app.notFound((c) => (c.req.path.startsWith('/api/') ? fail(c, 404, 'Not found') : c.env.ASSETS.fetch(c.req.raw)));
 
-export default { fetch: app.fetch };
+/** Admin: what the monitor sees right now (the dashboard's "System health"). */
+app.get('/api/monitor', async (c) => {
+  if (c.get('auth').role !== 'admin') return fail(c, 403, 'Admins only.');
+  return c.json({ success: true, problems: await findProblems(c.env) });
+});
+
+export default {
+  fetch: app.fetch,
+  // Every 10 minutes: check the bot is answering and alert the admin's phone if not.
+  scheduled: (event, env, ctx) => ctx.waitUntil(runMonitor(env).catch((err) => console.error('[Monitor] failed:', err.message))),
+};

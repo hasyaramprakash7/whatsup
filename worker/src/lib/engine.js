@@ -10,6 +10,7 @@ import { publish } from './chatlog.js';
 import { detailsShort, hasPin, areasOf, inArea } from './itemfields.js';
 import { geocode, reverseGeocode, distanceKm, kmLabel, mapsLink } from './geo.js';
 import { detectLanguage, ui, DEFAULT_MESSAGES_TE, parseAmount, rupees, amountRange } from './lang.js';
+import { recordEvent } from './monitor.js';
 
 const RESEND_EVERY_MS = 10 * 60 * 1000;
 const MAX_UNEXPECTED = 2;             // re-ask this many times, then hand over to a person
@@ -358,6 +359,7 @@ export class Conversation {
       }
     } catch (err) {
       console.error(`[Flow] +${this.phone}:`, err.message);
+      await recordEvent(this.env, 'flow_error', `${err.message}`.slice(0, 300), this.tenant._id).catch(() => {});
       await this.bot.text(this.phone, this.msg('error')).catch(() => {});
     }
     return this.touch();
