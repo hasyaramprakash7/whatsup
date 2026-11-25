@@ -29,6 +29,7 @@
     sliders: '<path d="M4 21v-7M4 10V3M12 21v-9M12 8V3M20 21v-5M20 12V3M1 14h6M9 8h6M17 16h6"/>',
     building: '<rect x="4" y="2" width="16" height="20" rx="2"/><path d="M9 22v-4h6v4M8 6h.01M12 6h.01M16 6h.01M8 10h.01M12 10h.01M16 10h.01M8 14h.01M12 14h.01M16 14h.01"/>',
     activity: '<path d="M22 12h-4l-3 9L9 3l-3 9H2"/>',
+    wallet: '<path d="M19 7V5a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h14a2 2 0 0 0 2-2v-3"/><path d="M21 8h-6a3 3 0 0 0 0 6h6z"/><circle cx="16" cy="11" r=".8"/>',
     logout: '<path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4M16 17l5-5-5-5M21 12H9"/>',
     menu: '<path d="M4 6h16M4 12h16M4 18h16"/>',
     bell: '<path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/>',
@@ -210,8 +211,11 @@
   async function api(method, url, body) {
     const opts = { method };
     if (body !== undefined) { opts.body = JSON.stringify(body); opts.headers = { 'Content-Type': 'application/json' }; }
+    const tid = state.tenantId;
     const res = await authFetch(API + url, opts);
     const data = await res.json().catch(() => ({}));
+    // Answer for a business that is no longer open (switched meanwhile): drop it so it never lands on the new one.
+    if (tid && tid !== state.tenantId && url.includes(`/${tid}`)) return new Promise(() => {});
     if (!res.ok) { const err = new Error(data.error || `Request failed (${res.status})`); err.data = data; err.status = res.status; throw err; }
     return data;
   }
@@ -779,13 +783,38 @@
     } catch (err) { toast('Could not change the AI', err.message, { kind: 'error' }); }
   });
 
+  let switchSeq = 0;
+  /** Everything kept in memory for one business: cleared on every switch so another account's data never shows. */
+  function resetTenantMemory() {
+    state.inbox = null; state.builder = null; state.profileDraft = null; state.aiDraft = null; state.catalogAll = [];
+    clearInterval(bcTimer); bcTimer = null;
+    Object.assign(bcData, { limit: null, reasons: {}, campaigns: [], templates: null, tplError: '', msg: null });
+    bc = null; spendData = null;
+  }
   async function selectTenant(id, { silent } = {}) {
+    const seq = ++switchSeq;
+    const changed = id !== state.tenantId;
     state.tenantId = id;
     if (isAdmin()) store.set('tenantId', id);
-    const [res, cat] = await Promise.all([api('GET', `/tenants/${id}`), api('GET', `/catalog/${id}`).catch(() => ({ data: [] }))]);
+    if (changed) {
+      resetTenantMemory();
+      disconnectLive();
+      if (!silent && state.tenant) $('#page').innerHTML = '<div class="page-inner"><div class="card card-pad"><div class="skeleton" style="height:160px"></div></div></div>';
+    }
+    let res, cat;
+    try {
+      [res, cat] = await Promise.all([api('GET', `/tenants/${id}`), api('GET', `/catalog/${id}`).catch(() => ({ data: [] }))]);
+    } catch (err) {
+      if (seq !== switchSeq) return;
+      $('#page').innerHTML = `<div class="page-inner"><div class="card"><div class="empty"><span class="section-icon red">${icon('alert', 'lg')}</span><h3>Could not open this business</h3><p>${esc(err.message)}</p><button class="btn primary" id="switch-retry">${icon('refresh')}Try again</button></div></div></div>`;
+      hydrateIcons($('#page'));
+      $('#switch-retry')?.addEventListener('click', () => selectTenant(id));
+      return;
+    }
+    if (seq !== switchSeq) return; // another business was picked meanwhile: this answer is out of date
     applyTenantPayload(res);
     state.catalogAll = cat.data || []; useLayout(savedLayout());
-    state.inbox = null; state.builder = null; state.profileDraft = null; state.aiDraft = null;
+    if (!changed) { state.inbox = null; state.builder = null; state.profileDraft = null; state.aiDraft = null; }
     connectLive();
     refreshUnread();
     if (!silent) route();
@@ -930,6 +959,7 @@
     leads: { title: 'Leads', icon: 'users', render: renderLeads },
     confirmed: { title: 'Confirmed', icon: 'check', render: renderConfirmed },
     broadcast: { title: 'Broadcast', icon: 'megaphone', render: renderBroadcast },
+    pricing: { title: 'Bulk broadcast & pricing', icon: 'wallet', render: renderPricing },
     flow: { title: 'Flow Builder', icon: 'layers', render: renderBuilder },
     catalog: { title: 'Products & Services', icon: 'image', render: () => { catState.category = ''; renderCatalog(); } },
     ai: { title: 'AI Assistant', icon: 'sparkle', render: renderAi },
@@ -943,7 +973,7 @@
     const link = (p, extra = '') => `<a href="#/${p}" data-page="${p}" title="${esc(PAGES[p].title)}">${icon(PAGES[p].icon)}<span>${PAGES[p].title}</span>${extra}</a>`;
     $('#nav').innerHTML = `
       <div class="nav-label">Workspace</div>
-      ${link('overview')}${link('inbox', `<span class="badge" id="nav-unread" ${state.unreadChats ? '' : 'hidden'}>${state.unreadChats}</span>`)}${link('leads')}${link('confirmed')}${link('broadcast')}
+      ${link('overview')}${link('inbox', `<span class="badge" id="nav-unread" ${state.unreadChats ? '' : 'hidden'}>${state.unreadChats}</span>`)}${link('leads')}${link('confirmed')}${link('broadcast')}${link('pricing')}
       <div class="nav-label">Configure</div>
       ${link('flow')}${link('catalog')}${link('ai')}${link('profile')}${link('settings')}${link('team')}
       ${isAdmin() ? `<div class="nav-label">Admin</div>${link('clients')}` : ''}
@@ -1772,7 +1802,7 @@
     });
     clearInterval(bcTimer);
     bcTimer = setInterval(() => {
-      if (state.route.page !== 'broadcast' || !$('#bc-campaigns')) { clearInterval(bcTimer); return; }
+      if (!['broadcast', 'pricing'].includes(state.route.page) || !$('#bc-campaigns')) { clearInterval(bcTimer); return; }
       if (document.visibilityState === 'visible') loadCampaigns();
     }, 15000);
   }
@@ -1805,6 +1835,92 @@
     } });
   }
   let bc = null;
+
+  // ============================================================
+  // Bulk broadcast & pricing: what WhatsApp costs (from Meta), top-up link, daily limit, live campaigns
+  // ============================================================
+  let spendData = null;
+  const money = (n, cur) => { try { return new Intl.NumberFormat('en-IN', { style: 'currency', currency: cur || 'INR', maximumFractionDigits: 2 }).format(n || 0); } catch { return `${cur || '₹'} ${(n || 0).toFixed(2)}`; } };
+  function renderPricing() {
+    $('#page').innerHTML = `<div class="page-inner">
+      <div class="page-head"><div><h1>Bulk broadcast & pricing</h1><p>What WhatsApp messages cost this business, where to top up, your daily sending limit and live campaigns.</p></div>
+        <span class="spacer"></span><button class="btn" id="sp-refresh">${icon('refresh')}Refresh</button><a class="btn primary" href="#/broadcast">${icon('megaphone')}New bulk broadcast</a></div>
+      <div id="sp-banners"></div>
+      <div class="kpis" id="sp-kpis">${'<div class="card kpi"><div class="skeleton" style="height:64px"></div></div>'.repeat(4)}</div>
+      <div class="overview-grid">
+        <div class="stack">
+          <div class="card"><div class="card-head"><span class="section-icon blue">${icon('activity')}</span><div><h2>Spending, last 30 days</h2><p>From Meta's pricing report (Meta's figures can be a few hours behind)</p></div></div><div class="card-body" id="sp-chart"><div class="skeleton" style="height:140px"></div></div></div>
+          <div class="card"><div class="card-head"><span class="section-icon indigo">${icon('template')}</span><div><h2>This month by message type</h2><p>Marketing and utility are paid; service replies (customer wrote first) are free</p></div></div><div class="card-body" id="sp-cats"></div></div>
+          <div class="card"><div class="card-head"><span class="section-icon">${icon('phone')}</span><div><h2>This month by phone number</h2><p>Every WhatsApp number on this business's account</p></div></div><div class="card-body" id="sp-phones"></div></div>
+          <div class="card"><div class="card-head"><span class="section-icon blue">${icon('megaphone')}</span><div><h2>Campaigns</h2><p>Live: sent, delivered, read, replied and visits booked</p></div><span class="spacer"></span><button class="btn sm" id="q-refresh">${icon('refresh', 'sm')}Refresh</button></div><div class="card-body stack" id="bc-campaigns"><div class="skeleton" style="height:120px"></div></div></div>
+        </div>
+        <div class="stack">
+          <div class="card"><div class="card-head"><span class="section-icon amber">${icon('wallet')}</span><div><h2>Balance & top up</h2><p>Money for WhatsApp messages is paid to Meta</p></div></div><div class="card-body stack" id="sp-pay"><div class="skeleton" style="height:120px"></div></div></div>
+          <div class="card"><div class="card-head"><span class="section-icon amber">${icon('activity')}</span><div><h2>Daily sending limit</h2><p>People you can message first in 24 hours. Big lists continue by themselves the next day.</p></div></div>
+            <div class="card-body stack" id="bc-limit"><div class="skeleton" style="height:90px"></div></div></div>
+        </div>
+      </div></div>`;
+    $('#sp-refresh').addEventListener('click', () => { spendData = null; loadSpending(true); loadCampaigns(); });
+    $('#q-refresh').addEventListener('click', loadCampaigns);
+    wireCampaigns();
+    if (spendData && spendData.tenantId === state.tenantId) drawSpending(); else loadSpending();
+    loadCampaigns();
+  }
+  async function loadSpending(force) {
+    const tid = state.tenantId;
+    const btn = $('#sp-refresh'); if (force && btn) { btn.disabled = true; }
+    try {
+      const { data } = await api('GET', `/spending/${tid}`);
+      spendData = { ...data, tenantId: tid };
+      if (state.route.page === 'pricing' && state.tenantId === tid) drawSpending();
+    } catch (err) {
+      const el = $('#sp-banners'); if (el) { el.innerHTML = `<div class="banner red">${icon('alert')}<div>${esc(err.message)}</div></div>`; hydrateIcons(el); }
+    } finally { if (btn) btn.disabled = false; }
+  }
+  function drawSpending() {
+    const d = spendData; if (!d || !$('#sp-kpis')) return;
+    const cur = d.currency || 'INR'; const est = d.estimate || {};
+    // banners
+    const bn = [];
+    if (est.paymentProblem) bn.push(`<div class="banner red">${icon('alert')}<div><strong>Meta refused messages because of a payment problem.</strong> Campaigns are paused. Add funds or fix the card in Meta Billing, then tap Resume on the campaign. <a href="${esc(d.billingUrl)}" target="_blank" rel="noopener">Open Meta Billing →</a></div></div>`);
+    if (d.demo) bn.push(`<div class="banner blue">${icon('info')}<div>This is the test copy: the numbers below are <strong>samples</strong>. The live app shows your real Meta figures.</div></div>`);
+    if (d.error) bn.push(`<div class="banner amber">${icon('alert')}<div><strong>Meta's pricing report is not available right now:</strong> ${esc(d.error)} The estimate from your campaigns is still shown.</div></div>`);
+    $('#sp-banners').innerHTML = bn.length ? `<div class="stack" style="gap:10px;margin-bottom:16px">${bn.join('')}</div>` : '';
+    // KPIs
+    const T = d.totals || {}; const V = d.volume || {};
+    const kpi = (label, key, sub) => `<div class="card kpi"><div class="row"><span class="label">${label}</span><span class="section-icon amber">${icon('wallet', 'sm')}</span></div><div class="value">${d.available ? money(T[key], cur) : '—'}</div><div class="sub">${d.available ? `${(V[key] || 0).toLocaleString('en-IN')} messages${sub ? ` · ${sub}` : ''}` : 'waiting for Meta'}</div></div>`;
+    $('#sp-kpis').innerHTML = [kpi('Today', 'today'), kpi('Last 7 days', 'week'), kpi('This month', 'month', d.freeMonth ? `${d.freeMonth.toLocaleString('en-IN')} free` : ''), kpi('Last 30 days', 'last30')].join('');
+    // chart
+    const days = d.days || []; const top = Math.max(...days.map((x) => x.cost), 0.01);
+    $('#sp-chart').innerHTML = d.available && days.some((x) => x.cost || x.volume) ? `
+      <div style="display:flex;align-items:flex-end;gap:3px;height:140px">${days.map((x) => `<div title="${esc(new Date(x.date + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }))}: ${esc(money(x.cost, cur))} · ${x.volume} messages" style="flex:1;min-width:4px;height:${Math.max(x.cost ? 3 : 1, (x.cost / top) * 100)}%;background:${x.cost ? 'var(--accent, #6366f1)' : 'var(--line, #e5e7eb)'};border-radius:3px 3px 0 0"></div>`).join('')}</div>
+      <div class="row small muted" style="justify-content:space-between;margin-top:6px"><span>${esc(new Date(days[0].date + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }))}</span><span>Highest day ${esc(money(top, cur))}</span><span>Today</span></div>`
+      : '<div class="empty" style="padding:16px"><p>No paid messages in the last 30 days.</p></div>';
+    // categories
+    const cats = d.byCategory || [];
+    $('#sp-cats').innerHTML = cats.length ? `<table class="table"><thead><tr><th>Type</th><th>Messages</th><th>Cost</th><th>Per message</th></tr></thead><tbody>${cats.map((x) => `<tr><td>${esc(x.label)}</td><td>${x.volume.toLocaleString('en-IN')}</td><td><strong>${esc(money(x.cost, cur))}</strong></td><td>${x.volume && x.cost ? esc(money(x.cost / x.volume, cur)) : 'free'}</td></tr>`).join('')}</tbody></table>`
+      : `<p class="muted">${d.available ? 'No messages this month yet.' : 'Shown once Meta\'s report is available.'}</p>`;
+    // phones
+    const ph = d.byPhone || []; const Q = { GREEN: ['High', 'd-READ'], YELLOW: ['Medium', 'd-QUEUED'], RED: ['Low', 'd-FAILED'] };
+    $('#sp-phones').innerHTML = ph.length ? `<table class="table"><thead><tr><th>Number</th><th>Name</th><th>Quality</th><th>Messages</th><th>Cost</th></tr></thead><tbody>${ph.map((x) => {
+      const q = Q[String(x.quality || '').toUpperCase()];
+      return `<tr><td>${esc(x.display || fmtPhone(x.phone))}</td><td>${esc(x.name || '—')}</td><td>${q ? `<span class="pill ${q[1]}">${q[0]}</span>` : '—'}</td><td>${x.volume.toLocaleString('en-IN')}</td><td><strong>${esc(money(x.cost, cur))}</strong></td></tr>`;
+    }).join('')}</tbody></table>` : '<p class="muted">No numbers found on this account.</p>';
+    // balance & top up
+    const L = d.limit || {};
+    $('#sp-pay').innerHTML = `
+      <dl class="kv"><dt>Meta account</dt><dd>${esc(d.accountName || '—')}</dd>
+        <dt>Currency</dt><dd>${esc(cur)}</dd>
+        <dt>Payment method</dt><dd>${d.fundingLinked === true ? '<span class="pill d-READ">Linked</span>' : d.fundingLinked === false ? '<span class="pill d-FAILED">Not added</span>' : '<span class="muted">See Meta Billing</span>'}</dd>
+        <dt>Payment status</dt><dd>${est.paymentProblem ? '<span class="pill d-FAILED">Problem — top up</span>' : '<span class="pill d-READ">OK</span>'}</dd>
+        <dt>Daily limit</dt><dd>${L.unlimited ? 'Unlimited' : (L.limit ?? '—').toLocaleString?.('en-IN') ?? '—'} people${L.quality ? ` · quality ${esc(({ GREEN: 'High', YELLOW: 'Medium', RED: 'Low' })[String(L.quality).toUpperCase()] || L.quality)}` : ''}</dd></dl>
+      <div class="stat-chips"><div class="stat-chip"><b>${esc(money(est.waitingCost, cur))}</b><span>Still to send · ${(est.waitingPeople || 0).toLocaleString('en-IN')} people waiting</span></div>
+        <div class="stat-chip"><b>${esc(money(est.sentCostThisMonth, cur))}</b><span>Campaigns this month · ${(est.sentThisMonth || 0).toLocaleString('en-IN')} sent (our estimate)</span></div></div>
+      ${est.waitingCost ? `<p class="hint">Keep at least <strong>${esc(money(est.waitingCost, cur))}</strong> in Meta so the waiting campaign messages can go.</p>` : ''}
+      <a class="btn primary" href="${esc(d.billingUrl)}" target="_blank" rel="noopener" style="justify-content:center">${icon('wallet')}Top up in Meta Billing</a>
+      <p class="hint">Meta does not let other apps read your balance or add money. The button opens this account's Meta Billing page, where the owner adds funds or a card. ${d.checkedAt ? `Checked ${esc(relTime(d.checkedAt))}.` : ''}</p>`;
+    hydrateIcons($('#page'));
+  }
 
   function renderBroadcast() {
     const t = state.tenant; const tp = t.templates || {};
