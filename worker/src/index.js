@@ -18,7 +18,7 @@ import { TEMPLATES, flowFromTemplate, getTemplate, personalizeFlow } from './lib
 import { WhatsAppClient } from './lib/whatsapp.js';
 import { sendingSettings, dailyLimit, usage, sendingWindow, daysNeeded, costEach, cleanSending, templateShape, cleanParams, createCampaign, getCampaign, listCampaigns, listRecipients,
   setCampaignStatus, pauseAll, applyRecipientStatus, refreshMetaLimits, PAUSE_REASONS } from './lib/campaigns.js';
-import { metaSpending, campaignEstimate } from './lib/spending.js';
+import { metaSpending, campaignEstimate, cleanBalance, balanceEstimate } from './lib/spending.js';
 import { outboundRecorder, publish } from './lib/chatlog.js';
 import { aiDecide } from './lib/ai.js';
 import { MEDIA_FILE, moveInboundToPrivate } from './lib/media.js';
@@ -812,7 +812,19 @@ app.get('/api/spending/:tid', tenantAccess(), async (c) => {
     campaignEstimate(c.env, tenant._id, { offset }),
     limitInfo(c, tenant),
   ]);
-  return c.json({ success: true, data: { ...meta, estimate, limit } });
+  const s = sendingSettings(tenant);
+  const balance = s.balance ? { ...balanceEstimate(s.balance, meta.spentSinceBalance ?? 0, { costMarketing: s.costMarketing, waitingCost: estimate.waitingCost }), exact: meta.spentSinceBalance != null } : null;
+  return c.json({ success: true, data: { ...meta, estimate, limit, balance } });
+});
+
+/** The owner types the "Available funds" from Meta Billing; the app counts down from it as messages are charged. */
+app.put('/api/tenants/:tid/balance', tenantAccess(), async (c) => {
+  const tenant = await getTenant(c.env, c.req.param('tid'));
+  if (!tenant) return fail(c, 404, 'Not found');
+  const { value, error } = cleanBalance(await c.req.json().catch(() => ({})));
+  if (error) return fail(c, 400, error);
+  await c.env.DB.prepare("UPDATE tenants SET sending = json_set(COALESCE(sending, '{}'), '$.balance', json(?)) WHERE id = ?").bind(JSON.stringify(value), tenant._id).run();
+  return c.json({ success: true, balance: value });
 });
 
 /** Creates a campaign from the ticked contacts and starts (or schedules) it. Big lists continue day after day. */

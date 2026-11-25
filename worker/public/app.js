@@ -1883,6 +1883,8 @@
     // banners
     const bn = [];
     if (est.paymentProblem) bn.push(`<div class="banner red">${icon('alert')}<div><strong>Meta refused messages because of a payment problem.</strong> Campaigns are paused. Add funds or fix the card in Meta Billing, then tap Resume on the campaign. <a href="${esc(d.billingUrl)}" target="_blank" rel="noopener">Open Meta Billing →</a></div></div>`);
+    const B = d.balance;
+    if (B && B.level !== 'ok' && !est.paymentProblem) bn.push(`<div class="banner ${B.level === 'empty' ? 'red' : 'amber'}">${icon('wallet')}<div><strong>${B.level === 'empty' ? 'Your Meta balance is probably used up' : 'Your Meta balance is running low'}</strong> — about ${esc(money(Math.max(B.left, 0), cur))} left${B.needed > B.left ? `, but waiting campaign messages need about ${esc(money(B.needed, cur))}` : ''}. <a href="${esc(d.billingUrl)}" target="_blank" rel="noopener">Add funds in Meta Billing →</a></div></div>`);
     if (d.demo) bn.push(`<div class="banner blue">${icon('info')}<div>This is the test copy: the numbers below are <strong>samples</strong>. The live app shows your real Meta figures.</div></div>`);
     if (d.error) bn.push(`<div class="banner amber">${icon('alert')}<div><strong>Meta's pricing report is not available right now:</strong> ${esc(d.error)} The estimate from your campaigns is still shown.</div></div>`);
     $('#sp-banners').innerHTML = bn.length ? `<div class="stack" style="gap:10px;margin-bottom:16px">${bn.join('')}</div>` : '';
@@ -1908,7 +1910,18 @@
     }).join('')}</tbody></table>` : '<p class="muted">No numbers found on this account.</p>';
     // balance & top up
     const L = d.limit || {};
+    const lvl = B ? ({ ok: ['d-READ', 'Enough'], low: ['d-QUEUED', 'Running low'], empty: ['d-FAILED', 'Used up'] })[B.level] : null;
     $('#sp-pay').innerHTML = `
+      ${B ? `<div class="stack" style="gap:6px">
+          <div class="row" style="gap:10px;align-items:baseline"><span class="muted small">Balance left (estimate)</span><span class="pill ${lvl[0]}">${lvl[1]}</span></div>
+          <div style="font-size:30px;font-weight:700;line-height:1.1">${esc(money(Math.max(B.left, 0), cur))}</div>
+          <p class="hint" style="margin:0">${esc(money(B.typed, cur))} you typed ${esc(relTime(B.typedAt))} − ${esc(money(B.spentSince, cur))} messages since − ${esc(money(B.used - B.spentSince, cur))} GST (18%)${B.exact ? '' : ' · Meta’s report was not available, so new charges may be missing'}.
+            ${B.marketingLeft != null ? `Enough for about <strong>${B.marketingLeft.toLocaleString('en-IN')}</strong> more marketing messages.` : ''}</p>
+        </div>` : `<div class="banner blue">${icon('info')}<div><strong>See your balance here.</strong> Open Meta Billing, copy <em>Available funds</em> (e.g. ₹89.81) and type it below. The app then counts it down as messages are charged.</div></div>`}
+      <form class="row wrap" id="sp-bal-form" style="gap:8px;align-items:flex-end">
+        <label class="field" style="margin:0"><span>Available funds in Meta (₹)</span><input class="input" type="number" step="0.01" min="0" name="amount" placeholder="e.g. 89.81" style="width:150px" /></label>
+        <button class="btn sm primary" type="submit">${B ? 'Update balance' : 'Save balance'}</button><span id="sp-bal-msg" class="small"></span></form>
+      <p class="hint" style="margin-top:-4px">Type it again after each top-up. Meta takes money about once a day, so small differences are normal.</p>
       <dl class="kv"><dt>Meta account</dt><dd>${esc(d.accountName || '—')}</dd>
         <dt>Currency</dt><dd>${esc(cur)}</dd>
         <dt>Payment method</dt><dd>${d.fundingLinked === true ? '<span class="pill d-READ">Linked</span>' : d.fundingLinked === false ? '<span class="pill d-FAILED">Not added</span>' : '<span class="muted">See Meta Billing</span>'}</dd>
@@ -1920,6 +1933,14 @@
       <a class="btn primary" href="${esc(d.billingUrl)}" target="_blank" rel="noopener" style="justify-content:center">${icon('wallet')}Top up in Meta Billing</a>
       <p class="hint">Meta does not let other apps read your balance or add money. The button opens this account's Meta Billing page, where the owner adds funds or a card. ${d.checkedAt ? `Checked ${esc(relTime(d.checkedAt))}.` : ''}</p>`;
     hydrateIcons($('#page'));
+    $('#sp-bal-form').addEventListener('submit', async (e) => {
+      e.preventDefault();
+      const f = e.currentTarget; const msg = $('#sp-bal-msg');
+      if (f.amount.value === '') { msg.textContent = 'Type the amount first.'; return; }
+      msg.textContent = 'Saving…'; msg.className = 'small muted';
+      try { await api('PUT', `/tenants/${state.tenantId}/balance`, { amount: Number(f.amount.value) }); toast('Balance saved', 'The app now counts it down as messages are charged.'); await loadSpending(true); }
+      catch (err) { msg.textContent = err.message; msg.className = 'small'; msg.style.color = 'var(--danger)'; }
+    });
   }
 
   function renderBroadcast() {

@@ -165,6 +165,7 @@ export function describeAction(method, path) {
     [/^campaigns\/[^/]+$/, () => 'Started a broadcast campaign'],
     [/^campaigns\/[^/]+\/[^/]+\/(pause|resume|cancel)$/, (m) => `${m[1][0].toUpperCase()}${m[1].slice(1)}d a broadcast campaign`],
     [/^tenants\/[^/]+\/sending/, () => 'Changed the daily sending limit'],
+    [/^tenants\/[^/]+\/balance/, () => 'Updated the Meta balance'],
     [/^uploads\//, () => 'Uploaded a file'],
     [/^team\//, () => (method === 'DELETE' ? 'Removed a team member' : 'Added a team member')],
   ];
