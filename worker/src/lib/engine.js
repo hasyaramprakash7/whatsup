@@ -51,6 +51,15 @@ const GREETING = /^(h+i+|h+e+l+o+|hlo|helo|hai|hey+|hiya|namaste|namasthe|namask
 const RESTART_AFTER_MS = 30 * 60 * 1000;
 const isGreeting = (m) => m?.type === 'text' && GREETING.test((m.text?.body || '').trim());
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
+/** "my name is ravi kumar" / "నా పేరు రవి" / "naa peru Ravi" → "Ravi Kumar" / "రవి" / "Ravi". */
+export function cleanName(text) {
+  let s = String(text || '').trim().replace(/[.!🙏😊]+$/u, '').trim();
+  s = s.replace(/^(hi|hello|hai)[,!\s]+/i, '')
+    .replace(/^(my name is|my name's|myself|i am|i'm|im|this is|it's|its|name is|name:|naa peru|na peru|naa pēru|నా పేరు|నేను|పేరు)\s*[:\-]?\s*/iu, '')
+    .replace(/\s*(andi|garu|అండి|గారు)$/iu, '').replace(/\s+/g, ' ').trim();
+  // Latin names: capitalise each word ("ravi kumar" → "Ravi Kumar"); other scripts stay as typed.
+  return /^[a-z .'-]+$/i.test(s) ? s.toLowerCase().replace(/(^|[\s'-])([a-z])/g, (m, a, b) => a + b.toUpperCase()) : s;
+}
 
 export class Conversation {
   /**
@@ -459,6 +468,7 @@ export class Conversation {
     while (step) {
       if (step.type === 'send') { await this.sendContent(step); step = stepAfter(this.flow, step); continue; }
       if (step.type === 'finish') { await this.finish(step); return; }
+      if (step.type === 'question' && step.input === 'name' && step.field && this.lead?.data?.[step.field]) { step = stepAfter(this.flow, step); continue; }
       if (step.type === 'slots' && this.state.wantTime) { // the time they asked for earlier comes first
         const req = checkLocalTime(this.state.wantTime, new Date(), this.visitHours(step));
         this.state.wantTime = null;
@@ -566,7 +576,10 @@ export class Conversation {
     if (step.type === 'question') {
       if (!text) return null;
       switch (step.input) {
-        case 'name': return /^[\p{L}][\p{L} .'-]{1,79}$/u.test(text) ? { value: text.replace(/\s+/g, ' '), isName: true } : { invalid: true };
+        case 'name': {
+          const name = cleanName(text);
+          return /^\p{L}[\p{L}\p{M} .'-]{0,79}$/u.test(name) && name.replace(/[^\p{L}]/gu, '').length >= 2 ? { value: name, isName: true } : { invalid: true };
+        }
         case 'email': return EMAIL_RE.test(text) ? { value: text.toLowerCase() } : { invalid: true };
         case 'phone': { const p = normalizePhone(text); return p ? { value: `+${p}` } : { invalid: true }; }
         case 'number': return /^\d+(\.\d+)?$/.test(text.replace(/[, ]/g, '')) ? { value: text.replace(/[, ]/g, '') } : { invalid: true };
