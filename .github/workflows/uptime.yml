@@ -1,0 +1,21 @@
+# Outside check: is the live app answering? Runs every 15 minutes on GitHub (free).
+# A failed run makes GitHub email the repository owner (Settings → Notifications → Actions).
+name: Uptime
+on:
+  schedule:
+    - cron: '*/15 * * * *'
+  workflow_dispatch:
+jobs:
+  health:
+    runs-on: ubuntu-latest
+    timeout-minutes: 3
+    steps:
+      - name: Live /health
+        run: |
+          for i in 1 2 3; do
+            body=$(curl -fsS --max-time 15 https://whatsapp-agent.hasya7893828468.workers.dev/health) && echo "$body" | grep -q '"status":"OK"' && { echo "OK: $body"; exit 0; }
+            echo "attempt $i failed: $body"; sleep 20
+          done
+          echo "::error::The live WhatsApp app is not answering /health"; exit 1
+      - name: Dashboard loads
+        run: curl -fsS --max-time 15 -o /dev/null https://whatsapp-agent.hasya7893828468.workers.dev/

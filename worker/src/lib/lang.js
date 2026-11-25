@@ -67,6 +67,8 @@ export const UI = {
     voiceUnclearAgain: "Sorry, I still couldn't hear that clearly 🙏 Please type your message — I'll reply right away.",
     voiceRetry: "Sorry, I couldn't catch that voice note clearly 🙏 Could you please type it, or send the voice note again speaking a little slowly?",
     chooseBelow: 'Please choose below 👇',
+    heard: (t) => `🎤 I heard: “${t}” — if that's not right, please type it.`,
+    alreadyBooked: (what) => `You're already booked ✅ — ${what}. Want a different time? Just send the day and time.`,
     budgetFits: (amt) => `Here are our options within your budget of *${amt}* 👇`,
     budgetClosest: (amt) => `We don't have a property within *${amt}* right now — these are the closest to your budget 👇`,
     notedTimeWorks: (when, visit) => `You asked for *${when}* 👍\nTap below to confirm your ${visit ? 'site visit' : 'booking'}, or choose another time:`,
@@ -103,6 +105,8 @@ export const UI = {
     voiceUnclearAgain: 'క్షమించండి, ఇంకా స్పష్టంగా వినిపించలేదు 🙏 దయచేసి మీ మెసేజ్ టైప్ చేయండి — వెంటనే జవాబిస్తాం.',
     voiceRetry: 'క్షమించండి, ఆ వాయిస్ నోట్ స్పష్టంగా వినిపించలేదు 🙏 దయచేసి టైప్ చేయండి, లేదా కొంచెం నెమ్మదిగా మాట్లాడి మళ్ళీ పంపండి.',
     chooseBelow: 'దయచేసి కింద ఎంచుకోండి 👇',
+    heard: (t) => `🎤 నేను విన్నది: “${t}” — సరిగ్గా లేకపోతే, దయచేసి టైప్ చేయండి.`,
+    alreadyBooked: (what) => `మీ బుకింగ్ ఇప్పటికే కన్ఫర్మ్ అయింది ✅ — ${what}. వేరే సమయం కావాలంటే, రోజు, సమయం పంపండి.`,
     budgetFits: (amt) => `మీ బడ్జెట్ *${amt}* లో మా ఆప్షన్లు ఇవి 👇`,
     budgetClosest: (amt) => `ప్రస్తుతం *${amt}* లోపు ప్రాపర్టీ లేదు — మీ బడ్జెట్‌కి దగ్గరగా ఉన్నవి ఇవి 👇`,
     notedTimeWorks: (when, visit) => `మీరు *${when}* అడిగారు 👍\nమీ ${visit ? 'సైట్ విజిట్' : 'బుకింగ్'} కన్ఫర్మ్ చేయడానికి కింద నొక్కండి, లేదా వేరే సమయం ఎంచుకోండి:`,
@@ -181,6 +185,38 @@ export function amountRange(label) {
   if (a && /\+|above|over|more/i.test(label)) return [a, Infinity];
   if (a && /under|below|upto|up to|less/i.test(label)) return [0, a];
   return null;
+}
+
+// ---------- product descriptions in Telugu (background, a few at a time) ----------
+/**
+ * For businesses with Telugu wording: translates product descriptions that have no Telugu yet (or whose English
+ * changed since). A description the business typed in Telugu itself is kept. Returns how many were translated.
+ */
+export async function translateCatalogs(env, max = 8) {
+  if (!env.AI) return 0;
+  const { results: tenants } = await env.DB.prepare("SELECT id FROM tenants WHERE is_active = 1 AND json_extract(flow, '$.i18n.te') IS NOT NULL").all();
+  let done = 0;
+  for (const t of tenants) {
+    const { results } = await env.DB.prepare(`SELECT id, description, details FROM catalog_items WHERE tenant_id = ? AND description != ''
+      AND (json_extract(details, '$.te_description') IS NULL OR COALESCE(json_extract(details, '$.te_src'), '') != description) LIMIT ?`).bind(t.id, max - done).all();
+    for (const r of results) {
+      try {
+        const out = await env.AI.run('@cf/meta/llama-3.3-70b-instruct-fp8-fast', { max_tokens: 600, temperature: 0.2, messages: [
+          { role: 'system', content: 'Translate this real-estate / product description into natural, everyday Telugu (Telugu script) as spoken in Hyderabad. Keep numbers, ₹ amounts, BHK, sq.ft and brand or place names as they are. Reply with the Telugu text only.' },
+          { role: 'user', content: r.description },
+        ] });
+        const te = String(out?.response || '').trim().slice(0, 700);
+        if (!te || !/[\u0C00-\u0C7F]/.test(te)) continue;
+        const details = JSON.parse(r.details || '{}');
+        details.te_description = te; details.te_src = r.description;
+        await env.DB.prepare('UPDATE catalog_items SET details = ? WHERE id = ?').bind(JSON.stringify(details), r.id).run();
+        done++;
+      } catch (err) { console.warn('[Translate] description failed:', err.message); }
+    }
+    if (done >= max) break;
+  }
+  if (done) console.log(`[Translate] ${done} product description(s) now in Telugu`);
+  return done;
 }
 
 // ---------- flow translation (AI, once; the business can edit the result) ----------

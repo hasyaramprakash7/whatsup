@@ -1514,7 +1514,7 @@
     $('#conf-table').innerHTML = `<table class="table"><thead><tr><th>Customer</th><th>Booked for</th><th>Details</th><th>Team alert</th><th>Confirmed</th><th></th></tr></thead><tbody>
       ${rows.map((l) => `<tr>
         <td><div class="person">${avatar(l.name, l.phone)}<div><strong>${esc(displayName(l))}</strong><small>${esc(fmtPhone(l.phone))}</small></div></div></td>
-        <td>${l.bookedAt ? `<strong>${esc(bookedLabel(l))}</strong>` : '<span class="muted">—</span>'}</td>
+        <td>${l.bookedAt ? `<strong>${esc(bookedLabel(l))}</strong>` : '<span class="muted">—</span>'}${l.data?.booking_note ? ` <span class="pill ${l.data.booking_note === 'Cancelled' ? 'd-FAILED' : 'plain'}">${esc(l.data.booking_note)}</span>` : ''}</td>
         <td><div class="conf-details">${leadDetails(l).map(([k, v]) => `<span class="pill plain" title="${esc(k)}"><span class="muted">${esc(k)}:</span>&nbsp;${esc(v)}</span>`).join('') || '<span class="muted">—</span>'}</div></td>
         <td>${l.adminAlertStatus === 'SENT' ? '<span class="pill d-READ">sent</span>' : l.adminAlertStatus === 'FAILED' ? `<span class="pill d-FAILED" title="${esc(l.adminAlertError || '')}">failed</span>` : '<span class="muted">—</span>'}</td>
         <td class="muted">${relTime(l.adminAlertAt || l.updatedAt)}</td>
@@ -2342,6 +2342,7 @@
             : fd.type === 'map' ? `<input class="input" name="d_${fd.key}" maxlength="500" inputmode="url" value="${esc(item?.details?.[fd.key] || '')}" placeholder="${esc(fd.placeholder || '')}" /><span class="hint">In Google Maps: open the site → Share → Copy link. Customers get it in the photo caption, and the flow's location step sends this pin.</span>`
             : `<input class="input" name="d_${fd.key}" maxlength="80" ${fd.key === 'pincode' ? 'inputmode="numeric" pattern="\\d{6}"' : ''} value="${esc(item?.details?.[fd.key] || '')}" placeholder="${esc(fd.placeholder || '')}" />`}</label>`).join('')}
           <label class="field span-2"><span>Description <span class="muted">(optional)</span></span><textarea name="description" rows="3" maxlength="500" placeholder="${esc(w.ex[3])}">${esc(item?.description || '')}</textarea><span class="hint">Sent in the photo caption with the name, price and details above. The AI uses all of it to answer questions.</span></label>
+          <label class="field span-2"><span>Description in Telugu <span class="muted">(optional — filled in automatically)</span></span><textarea name="d_te_description" rows="3" maxlength="700" placeholder="Telugu customers see this. Leave empty and it is translated for you within a few minutes.">${esc(item?.details?.te_description || '')}</textarea></label>
         </div><p class="form-error" id="item-error"></p></div>
       <div class="modal-foot"><button type="button" class="btn" data-close>Cancel</button><button class="btn primary" type="submit">${icon('check')}${isNew ? 'Add' : 'Save'}</button></div></form>`, {
       wide: true,
@@ -2359,7 +2360,9 @@
           e.preventDefault(); const f = e.target; const btn = $('button[type=submit]', f); btn.disabled = true;
           const fd = new FormData();
           for (const k of ['name', 'price', 'category', 'description']) fd.append(k, f[k].value);
-          fd.append('details', JSON.stringify(Object.fromEntries(itemFieldsOf(layout).map((x) => [x.key, f[`d_${x.key}`]?.value || '']))));
+          const teDesc = f.d_te_description?.value.trim() || '';
+          fd.append('details', JSON.stringify({ ...Object.fromEntries(itemFieldsOf(layout).map((x) => [x.key, f[`d_${x.key}`]?.value || ''])),
+            ...(teDesc ? { te_description: teDesc, te_src: teDesc === (item?.details?.te_description || '') ? (item?.details?.te_src ?? f.description.value.trim()) : f.description.value.trim() } : {}) }));
           fd.append('active', f.active.checked ? 'true' : 'false');
           if (isNew) fd.append('layout', savedLayout());
           if (photo) fd.append('image', photo);

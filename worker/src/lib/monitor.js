@@ -84,3 +84,43 @@ export async function runMonitor(env) {
   await env.DB.prepare('DELETE FROM events WHERE at < ?').bind(iso(14 * 24 * 3600e3)).run().catch(() => {});
   return { problems, alerted: fresh.map((p) => p.key) };
 }
+
+// ---------- daily summary (9 AM site time): yesterday at a glance, on the admin's and each business's phones ----------
+const SUMMARY_HOUR = 9;
+/** Local day [start, end) as ISO strings, `daysAgo` days before `now`, for a "+05:30"-style offset. */
+export function localDay(now, offset = '+05:30', daysAgo = 1) {
+  const [, sign, h, m] = /^([+-])(\d{2}):(\d{2})$/.exec(offset) || [, '+', '05', '30'];
+  const off = (sign === '-' ? -1 : 1) * (Number(h) * 60 + Number(m)) * 60000;
+  const local = new Date(now + off); local.setUTCHours(0, 0, 0, 0);
+  const start = local.getTime() - off - daysAgo * 864e5;
+  return { start: new Date(start).toISOString(), end: new Date(start + 864e5).toISOString(), label: new Date(start + off).toISOString().slice(0, 10), hour: new Date(now + off).getUTCHours() };
+}
+
+export async function dailySummary(env, now = Date.now(), { force = false } = {}) {
+  await ensureTables(env);
+  const day = localDay(now, env.SITE_UTC_OFFSET || '+05:30');
+  if (!force && day.hour !== SUMMARY_HOUR) return null;
+  const key = `daily-${day.label}`;
+  if (!force && await env.DB.prepare('SELECT 1 FROM monitor_alerts WHERE key = ?').bind(key).first()) return null; // once a day
+  await env.DB.prepare('INSERT INTO monitor_alerts (key, last_at, detail) VALUES (?, ?, ?) ON CONFLICT (key) DO UPDATE SET last_at = excluded.last_at')
+    .bind(key, new Date(now).toISOString(), 'daily summary').run();
+  const { results } = await env.DB.prepare(`SELECT t.id, t.business_name AS name,
+      (SELECT COUNT(*) FROM leads l WHERE l.tenant_id = t.id AND l.created_at >= ?1 AND l.created_at < ?2) AS newChats,
+      (SELECT COUNT(DISTINCT m.phone) FROM messages m WHERE m.tenant_id = t.id AND m.direction = 'in' AND m.created_at >= ?1 AND m.created_at < ?2) AS chats,
+      (SELECT COUNT(*) FROM leads l WHERE l.tenant_id = t.id AND l.booked_at IS NOT NULL AND l.updated_at >= ?1 AND l.updated_at < ?2) AS bookings,
+      (SELECT COUNT(*) FROM messages m WHERE m.tenant_id = t.id AND m.direction = 'out' AND m.status = 'failed' AND m.created_at >= ?1 AND m.created_at < ?2) AS failed
+    FROM tenants t WHERE t.is_active = 1`).bind(day.start, day.end).all();
+  const errors = (await env.DB.prepare('SELECT COUNT(*) AS n FROM events WHERE at >= ? AND at < ?').bind(day.start, day.end).first())?.n || 0;
+  const line = (r) => `${r.chats} chats (${r.newChats} new) · ${r.bookings} visits booked${r.failed ? ` · ${r.failed} not delivered` : ''}`;
+  const total = results.reduce((a, r) => ({ chats: a.chats + r.chats, newChats: a.newChats + r.newChats, bookings: a.bookings + r.bookings, failed: a.failed + r.failed }), { chats: 0, newChats: 0, bookings: 0, failed: 0 });
+  const { results: subs } = await env.DB.prepare('SELECT * FROM push_subscriptions').all().catch(() => ({ results: [] }));
+  let sent = 0;
+  for (const s of subs) {
+    const mine = s.scope === '*' ? null : results.find((r) => r.id === s.scope);
+    if (s.scope !== '*' && !mine) continue;
+    const body = mine ? line(mine) : `${line(total)}${errors ? ` · ${errors} bot problems` : ' · no problems'}${results.length > 1 ? `\n${results.filter((r) => r.chats).map((r) => `${r.name}: ${r.chats} chats, ${r.bookings} booked`).join('\n')}` : ''}`;
+    await sendPush(env, s, { kind: 'summary', title: `Yesterday (${day.label})`, body: body.slice(0, 400), url: mine ? '/#/leads' : '/#/overview', tag: key, at: now }, { urgency: 'normal' }).then(() => sent++).catch(() => {});
+  }
+  console.log(`[Monitor] daily summary for ${day.label} sent to ${sent} device(s)`);
+  return { day: day.label, total, errors, perBusiness: results, sent };
+}

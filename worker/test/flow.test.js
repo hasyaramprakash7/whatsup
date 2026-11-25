@@ -252,3 +252,26 @@ test('team alert: a template still waiting for Meta falls back to the approved o
   await d.text('hi'); await toTimeStep(d); await d.choose('Tomorrow');
   assert.equal(d.sent.find((m) => m.who === 'admin').args[0], 'team_booking_alert', 'once approved, the Utility one is used');
 });
+
+test('double tap / old time button after booking: no second booking or alert', async () => {
+  const c = newChat({ language: 'en' });
+  await c.text('hi'); await toTimeStep(c);
+  const opts = c.options();
+  await c.tap(opts[0].id);
+  const alerts = c.sent.filter((m) => m.who === 'admin').length;
+  const again = await c.tap(opts[0].id);
+  assert.match(again[0].text, /already booked/);
+  assert.equal(c.sent.filter((m) => m.who === 'admin').length, alerts, 'no second team alert');
+  const other = await c.tap(opts[1].id);
+  assert.match(other[0].text, /works/, 'a different old time is offered as a reschedule');
+});
+
+test('a saved area that matches no project (the "Lucknow" case) is dropped', async () => {
+  const c = newChat({ language: 'en' });
+  await c.text('hi'); await c.choose('Kokapet');
+  c.state.area = { key: 'gomti nagar, lucknow 226010', name: 'Gomti Nagar, Lucknow 226010' };
+  c.state.point = { lat: 26.87, lng: 81.02 };
+  const r = await c.text('hello');
+  assert.doesNotMatch(r.map((m) => m.text).join(' '), /Lucknow/);
+  assert.equal(c.state.area, undefined);
+});

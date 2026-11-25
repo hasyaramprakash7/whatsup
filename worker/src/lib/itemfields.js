@@ -80,7 +80,33 @@ export function cleanDetails(layout, raw, errors = []) {
     if (f.type === 'select' && !f.options.includes(v)) { errors.push(`${f.label}: choose one of the options.`); continue; }
     out[f.key] = v;
   }
+  // Telugu description for Telugu customers (typed by the business, or translated by the AI from `te_src`).
+  const te = String(src.te_description ?? '').trim();
+  if (te) { if (te.length > 700) errors.push('Telugu description: up to 700 characters.'); else out.te_description = te; }
+  if (out.te_description && src.te_src !== undefined) out.te_src = String(src.te_src).slice(0, 600);
   return out;
+}
+
+// ---------- captions in Telugu (fixed words from a dictionary: exact, instant, free) ----------
+const TE_LABELS = { config: 'కాన్ఫిగరేషన్', area: 'విస్తీర్ణం', floor: 'అంతస్తు', facing: 'ఫేసింగ్', possession: 'పొజెషన్', availability: 'అందుబాటు' };
+const TE_VALUES = {
+  East: 'తూర్పు', West: 'పడమర', North: 'ఉత్తరం', South: 'దక్షిణం', 'North-East': 'ఈశాన్యం', 'North-West': 'వాయువ్యం', 'South-East': 'ఆగ్నేయం', 'South-West': 'నైరుతి',
+  'Ready to move': 'రెడీ టు మూవ్ (వెంటనే నివసించవచ్చు)', 'Under construction': 'నిర్మాణంలో ఉంది', 'New launch': 'కొత్త లాంచ్',
+  Available: 'అందుబాటులో ఉంది', 'Few left': 'కొన్ని మాత్రమే మిగిలాయి', 'Sold out': 'అమ్ముడైపోయింది',
+  Villa: 'విల్లా', Plot: 'ప్లాట్', Commercial: 'కమర్షియల్',
+};
+const teValue = (key, v) => TE_VALUES[v] || (key === 'floor' ? v.replace(/^(\d+)(?:st|nd|rd|th)\s+floor$/i, '$1వ') : v);
+/** "₹95 Lakh" → "₹95 లక్షలు", "₹1.45 Cr" → "₹1.45 కోట్లు". */
+export const tePrice = (p) => String(p || '').replace(/\bLakhs?\b|\bLacs?\b|\bL\b/gi, 'లక్షలు').replace(/\bCrores?\b|\bCr\b/gi, 'కోట్లు');
+/** The photo caption for a Telugu customer (name and map stay as they are). */
+export function itemCaptionTe(it, englishCaption) {
+  if (!TE_LABELS || !(it.layout === 'real_estate' || Object.keys(it.details || {}).some((k) => TE_LABELS[k]))) {
+    return englishCaption(it); // other kinds of business: English until they get their own words
+  }
+  const pairs = itemFieldsFor(it.layout).filter((f) => !LOCATION_KEYS.has(f.key) && it.details?.[f.key]).map((f) => [TE_LABELS[f.key] || f.label, teValue(f.key, it.details[f.key])]);
+  const desc = it.details?.te_description || it.description || '';
+  const loc = locationLines(it);
+  return `*${it.name}*${it.price ? ` — ${tePrice(it.price)}` : ''}${pairs.length ? `\n${pairs.map(([k, v]) => `${k}: ${v}`).join('\n')}` : ''}${desc ? `\n${desc}` : ''}${loc ? `\n\n${loc}` : ''}`.slice(0, 1024);
 }
 
 // ---------- location (address + map pin) ----------

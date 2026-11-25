@@ -6,12 +6,14 @@
   "type": "module",
   "scripts": {
     "dev": "wrangler dev",
-    "deploy": "npm test && wrangler deploy",
+    "deploy": "node scripts/release.mjs",
     "db:migrate:local": "wrangler d1 migrations apply whatsapp-agent --local",
     "db:migrate:remote": "wrangler d1 migrations apply whatsapp-agent --remote",
     "test": "node --test --experimental-test-module-mocks --no-warnings \"test/**/*.test.js\"",
     "deploy:staging": "npm test && wrangler deploy --env staging",
-    "db:migrate:staging": "wrangler d1 migrations apply whatsapp-agent-staging --remote --env staging"
+    "db:migrate:staging": "wrangler d1 migrations apply whatsapp-agent-staging --remote --env staging",
+    "deploy:quick": "npm test && wrangler deploy",
+    "check:staging": "node scripts/staging-check.mjs smoke"
   },
   "dependencies": {
     "hono": "4.13.19"

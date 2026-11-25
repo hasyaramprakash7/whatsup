@@ -7,7 +7,7 @@ import { buildVisitSlots, parseSlotId, formatSlotLong, formatSlotShort, withinAi
 import { aiDecide } from './ai.js';
 import { upsertLead, recentTurns, takeAiReply, listCatalog, itemCaption, layoutOf } from './db.js';
 import { publish } from './chatlog.js';
-import { detailsShort, hasPin, areasOf, inArea } from './itemfields.js';
+import { detailsShort, hasPin, areasOf, inArea, itemCaptionTe } from './itemfields.js';
 import { geocode, reverseGeocode, distanceKm, kmLabel, mapsLink } from './geo.js';
 import { detectLanguage, ui, DEFAULT_MESSAGES_TE, parseAmount, rupees, amountRange } from './lang.js';
 import { recordEvent } from './monitor.js';
@@ -168,6 +168,9 @@ export class Conversation {
   async catalog() {
     if (!this._catalog) {
       const items = await listCatalog(this.env, this.tenant._id, { activeOnly: true, layout: layoutOf(this.tenant) });
+      if (this.state.area && items.length && !items.some((it) => inArea(it, this.state.area.key))) delete this.state.area;
+      const pinned = items.filter(hasPin);
+      if (this.state.point && pinned.length && Math.min(...pinned.map((it) => distanceKm(this.state.point, { lat: it.details.lat, lng: it.details.lng }))) > 80) delete this.state.point;
       const at = this.state.point; const area = this.state.area?.key;
       if (at || area) { // the chosen area first, then nearest; items without a pin keep their order at the end
         if (at) for (const it of items) if (hasPin(it)) it.km = distanceKm(at, { lat: it.details.lat, lng: it.details.lng });
@@ -211,7 +214,7 @@ export class Conversation {
 
   /** One product as one message: its photo with the caption (and an optional lead-in text above it). */
   async sendItem(it, lead = '', client = this.bot) {
-    const caption = `${lead ? `${lead}\n\n` : ''}${itemCaption(it)}`.slice(0, 1024);
+    const caption = `${lead ? `${lead}\n\n` : ''}${this.lang === 'te' ? itemCaptionTe(it, itemCaption) : itemCaption(it)}`.slice(0, 1024);
     try {
       if (it.imageUrl) await client.image(this.phone, it.imageUrl, caption);
       else await client.text(this.phone, caption);
@@ -274,12 +277,22 @@ export class Conversation {
       return this.continueInLanguage();
     }
 
+    // A time button tapped again after the booking (double tap, or an older message): never a second booking.
+    if (iid?.startsWith('SLOT_') && this.state.done && !this.state.stepId) {
+      const at = parseSlotId(iid); const booked = this.upcomingBooking(); const visit = this.visitStep();
+      if (at && booked && at.getTime() === booked.getTime()) { await this.bot.text(this.phone, this.U.alreadyBooked(this.bookingWords())).catch(() => {}); return this.touch(); }
+      if (at && visit && at.getTime() > Date.now()) {
+        this.reopenVisit(visit); if (booked) this.state.rescheduling = true;
+        await this.offerTime(visit, { at }); return this.touch();
+      }
+    }
+
     // Cancel / keep a booking (buttons from afterFlow).
     if (iid === 'BOOKING_CANCEL' || iid === 'BOOKING_KEEP') {
       const what = this.bookingWords();
       if (iid === 'BOOKING_KEEP' || !this.upcomingBooking()) { await this.bot.text(this.phone, this.U.kept(what)).catch(() => {}); return this.touch(); }
       const visitField = this.visitStep()?.field;
-      await this.saveLead({ set: { bookedAt: null, status: 'QUALIFIED' }, mergeData: visitField ? { [visitField]: `Cancelled (was ${this.lead?.data?.[visitField] || '—'})` } : {} });
+      await this.saveLead({ set: { bookedAt: null, status: 'QUALIFIED' }, mergeData: { booking_note: 'Cancelled', ...(visitField ? { [visitField]: `Cancelled (was ${this.lead?.data?.[visitField] || '—'})` } : {}) } });
       await this.bot.text(this.phone, this.U.cancelled(what)).catch(() => {});
       await this.alertTeam({ kind: 'handoff', headline: 'Visit cancelled', details: `Cancelled: ${what}`,
         text: `❌ *VISIT CANCELLED*\n\n• *Name:* ${this.lead?.name || '—'}\n• *Phone:* +${this.phone}\n• *Was:* ${what}` });
@@ -293,6 +306,12 @@ export class Conversation {
       if (it) { await this.rememberItem(it); await this.sendItem(it); await this.offerVisitFor(it); }
       else await this.bot.text(this.phone, this.U.itemGone).catch(() => {});
       return this.touch();
+    }
+
+    // An almost-clear voice note: show what was understood (the English meaning), then carry on as usual.
+    if (message.doubtful && message.voice) {
+      const meaning = (/\(English:\s*([^)]+)\)/.exec(textOf(message))?.[1] || textOf(message)).trim().slice(0, 200);
+      await this.bot.text(this.phone, this.U.heard(meaning)).catch(() => {});
     }
 
     // A voice note too unclear to write down: ask to type it or say it again — never guess, never hand over for it.
@@ -561,6 +580,7 @@ export class Conversation {
   async finish(step) {
     const chosen = await this.item(this.state.itemId);
     const extra = { address: this.siteAddress(chosen) };
+    await this.saveLead({ mergeData: { booking_note: this.state.rescheduling ? 'Rescheduled' : '' } });
     const visit = this.visitStep();
     if (this.lang === 'te' && visit?.field && this.lead?.bookedAt) extra[visit.field] = formatSlotLong(new Date(this.lead.bookedAt), 'te');
     await this.bot.text(this.phone, this.t(this.L(step).text, extra));

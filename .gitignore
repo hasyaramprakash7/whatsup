@@ -13,3 +13,4 @@ worker/.dev.vars
 
 worker/.staging.vars
 worker/.staging-seed.sql
+worker/backups/*.sql

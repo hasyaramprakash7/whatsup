@@ -99,7 +99,7 @@
         "STAGE": "staging",
         "AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
         "GRAPH_API_VERSION": "v25.0",
-        "GRAPH_BASE_URL": "https://graph.facebook.com",
+        "GRAPH_BASE_URL": "fake",
         "R2_PUBLIC_BASE_URL": "https://pub-8d93705764b8407a957deeec1fc05dda.r2.dev",
         "SITE_UTC_OFFSET": "+05:30",
         "DEFAULT_BROADCAST_TEMPLATE": "realestate_reengage_v1",

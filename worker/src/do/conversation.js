@@ -3,7 +3,9 @@
 // so a crash never loses a message and two messages from one person never race.
 import { DurableObject } from 'cloudflare:workers';
 import { getTenant, getLead, tenantAccessToken } from '../lib/db.js';
-import { recordInbound, outboundRecorder } from '../lib/chatlog.js';
+import { recordInbound, outboundRecorder, publish } from '../lib/chatlog.js';
+import { recordEvent } from '../lib/monitor.js';
+import { floodCheck } from '../lib/flood.js';
 import { Conversation, freshState, isOptOut } from '../lib/engine.js';
 import { WhatsAppClient } from '../lib/whatsapp.js';
 import { setUtcOffset } from '../lib/slots.js';
@@ -15,6 +17,10 @@ export class ConversationDO extends DurableObject {
   constructor(ctx, env) {
     super(ctx, env);
     this.sql = ctx.storage.sql;
+    this.tables();
+  }
+
+  tables() {
     this.sql.exec(`CREATE TABLE IF NOT EXISTS inbox (seq INTEGER PRIMARY KEY AUTOINCREMENT, wa_id TEXT, event TEXT NOT NULL, received_at INTEGER NOT NULL)`);
     this.sql.exec(`CREATE TABLE IF NOT EXISTS seen (wa_id TEXT PRIMARY KEY, at INTEGER NOT NULL)`);
   }
@@ -40,6 +46,7 @@ export class ConversationDO extends DurableObject {
   /** "Delete customer data": the bot forgets this chat completely. */
   async forget() {
     await this.ctx.storage.deleteAll();
+    this.tables(); // deleteAll also drops the inbox: a message arriving later must still be stored
     return true;
   }
 
@@ -49,14 +56,14 @@ export class ConversationDO extends DurableObject {
 
   async alarm() {
     for (;;) {
-      const row = this.sql.exec('SELECT seq, event FROM inbox ORDER BY seq LIMIT 1').toArray()[0];
+      const row = this.sql.exec('SELECT seq, event, received_at FROM inbox ORDER BY seq LIMIT 1').toArray()[0];
       if (!row) break;
       const event = JSON.parse(row.event);
       // Throws on D1/network trouble before anything is sent: the alarm is retried and the event stays queued.
       const ready = await this.prepare(event);
       // From here on, at most once: remove the event before replying so a retry can't double-send.
       this.sql.exec('DELETE FROM inbox WHERE seq = ?', row.seq);
-      if (ready) await this.respond(ready).catch((err) => console.error('[ConversationDO] respond failed:', err.message));
+      if (ready) await this.respond({ ...ready, receivedAt: row.received_at }).catch((err) => console.error('[ConversationDO] respond failed:', err.message));
     }
     this.sql.exec('DELETE FROM seen WHERE at < ?', Date.now() - SEEN_TTL_MS);
   }
@@ -73,7 +80,14 @@ export class ConversationDO extends DurableObject {
     if (!exists && MEDIA_TYPES.includes(message.type)) {
       // Photos, voice notes, videos and documents are copied to R2 so the Inbox can show and play them.
       const known = await getLead(this.env, tenantId, from).catch(() => null); // their language, if we know it
-      const saved = await saveInboundMedia(this.env, { tenantId, accessToken: await tenantAccessToken(this.env, tenant), message, voiceLanguage: tenant.ai?.voiceLanguage || 'te', customerLanguage: known?.language || null, context: `${tenant.profile?.displayName || tenant.businessName} (${String(tenant.industry || 'business').replace(/_/g, ' ')})` });
+      // What the bot is waiting for helps read a rough voice note ("repa mooru" while choosing a time = tomorrow 3).
+      const st = await this.ctx.storage.get('state').catch(() => null);
+      const step = st?.stepId && (tenant.flow?.steps || []).find((s) => s.id === st.stepId);
+      const expect = !step ? '' : step.type === 'slots' ? 'a day and time for a visit or appointment (e.g. "tomorrow at 3")'
+        : step.input === 'location' ? 'an area name or a 6-digit pincode'
+          : step.input === 'name' ? 'their name'
+            : step.type === 'choice' ? `one of: ${step.options.map((o) => o.title).join(', ')}` : '';
+      const saved = await saveInboundMedia(this.env, { tenantId, accessToken: await tenantAccessToken(this.env, tenant), message, voiceLanguage: tenant.ai?.voiceLanguage || 'te', customerLanguage: known?.language || null, expect, context: `${tenant.profile?.displayName || tenant.businessName} (${String(tenant.industry || 'business').replace(/_/g, ' ')})` });
       if (saved) msg = { ...message, _media: saved };
     }
     const lead = exists ? await getLead(this.env, tenantId, from) : (await recordInbound(this.env, tenantId, from, msg, profileName)).lead;
@@ -81,9 +95,23 @@ export class ConversationDO extends DurableObject {
     return { tenant, lead, from, message: msg };
   }
 
-  async respond({ tenant, lead, from, message }) {
+  /**
+   * Spam guard: more than 30 messages a minute from one number → the bot stays quiet for that number for 10 minutes
+   * (no AI or WhatsApp costs) and the team is alerted once. Messages still reach the Inbox.
+   */
+  async flooding(tenant, lead, from, receivedAt) {
+    const f = await floodCheck(this.ctx.storage, receivedAt || Date.now()); // by arrival time: slow replies must not hide a flood
+    if (!f.started) return f.quiet;
+    console.warn(`[ConversationDO] +${from}: ${f.count} messages in a minute — bot quiet for 10 minutes`);
+    await recordEvent(this.env, 'flood', `${f.count} messages/minute`, tenant._id).catch(() => {});
+    await publish(this.env, tenant._id, 'alert', { kind: 'handoff', headline: 'Possible spam', details: `${f.count} messages in one minute — the bot stopped answering this number for 10 minutes.`, phone: from, name: lead?.name || '' }).catch(() => {});
+    return true;
+  }
+
+  async respond({ tenant, lead, from, message, receivedAt }) {
     // A team member took over: the bot stays silent (opt-outs are still honoured).
     if (lead.botPaused && !isOptOut(message)) return;
+    if (!isOptOut(message) && await this.flooding(tenant, lead, from, receivedAt)) return; // STOP is always honoured
     setUtcOffset(this.env.SITE_UTC_OFFSET);
     const accessToken = await tenantAccessToken(this.env, tenant);
     const auth = { accessToken, phoneNumberId: tenant.phoneNumberId };
@@ -96,7 +124,7 @@ export class ConversationDO extends DurableObject {
     });
     // A transcribed voice note is answered exactly like the same words typed.
     const transcript = message._media?.transcript;
-    const state = await convo.handle(transcript ? { ...message, type: 'text', text: { body: transcript }, voice: true }
+    const state = await convo.handle(transcript ? { ...message, type: 'text', text: { body: transcript }, voice: true, ...(message._media?.doubtful ? { doubtful: true } : {}) }
       : message._media?.unclear ? { ...message, voice: true, unclear: true } : message);
     await this.ctx.storage.put('state', state);
   }

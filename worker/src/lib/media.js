@@ -67,6 +67,7 @@ const runAi = async (env, model, input) => {
   }
 };
 const UNCLEAR_LOGPROB = -0.7; // Whisper's own confidence: clear speech ≈ -0.2, garbled ≈ -1.0 or worse
+const DOUBTFUL_LOGPROB = -1.0; // between the two: tried with the AI, and the customer sees what was understood
 
 /** Duration-weighted average confidence of Whisper's segments (null when it gives none). */
 function confidence(r) {
@@ -77,11 +78,11 @@ function confidence(r) {
 }
 
 /** Fixes the speech engine's spelling and adds the English meaning: "రేపు మూడు గంటలకు…\n(English: …)". */
-async function cleanUp(env, text, voiceLanguage, context) {
+async function cleanUp(env, text, voiceLanguage, context, expect = '') {
   const lang = { te: 'Telugu', ta: 'Tamil', kn: 'Kannada', ml: 'Malayalam', mr: 'Marathi', gu: 'Gujarati', bn: 'Bengali', pa: 'Punjabi', or: 'Odia', ur: 'Urdu' }[voiceLanguage] || 'Indian-language';
   try {
     const r = await runAi(env, CLEANUP_MODEL, { max_tokens: 250, temperature: 0.1, messages: [
-      { role: 'system', content: `You fix speech-recognition spelling mistakes. The text is an automatic transcript of a short ${lang} (maybe mixed with English) WhatsApp voice note from a customer${context ? ` to ${context}` : ''}. Write what the customer said in correct ${lang} script, keeping their meaning exactly (do not add anything they did not say), then on a new line "English: " and the meaning in English. If the text is too garbled to be sure, answer exactly UNCLEAR.${CLEANUP_HINTS[voiceLanguage] ? `\n${CLEANUP_HINTS[voiceLanguage]}` : ''}` },
+      { role: 'system', content: `You fix speech-recognition spelling mistakes. The text is an automatic transcript of a short ${lang} (maybe mixed with English) WhatsApp voice note from a customer${context ? ` to ${context}` : ''}. Write what the customer said in correct ${lang} script, keeping their meaning exactly (do not add anything they did not say), then on a new line "English: " and the meaning in English. If the text is too garbled to be sure, answer exactly UNCLEAR.${expect ? `\nThe customer is most likely answering this: ${expect}. Read unclear words in that sense (but never invent what they did not say).` : ''}${CLEANUP_HINTS[voiceLanguage] ? `\n${CLEANUP_HINTS[voiceLanguage]}` : ''}` },
       { role: 'user', content: text },
     ] });
     const out = String(r?.response || '').trim();
@@ -101,7 +102,7 @@ async function cleanUp(env, text, voiceLanguage, context) {
  * 3) Whisper's own confidence decides: garbled → unclear (the bot asks them to type or resend — it never guesses);
  *    clear → the AI fixes the spelling and adds the English meaning, which the bot and the team can read.
  */
-async function transcribe(env, bytes, voiceLanguage = 'te', context = '', customerLanguage = null) {
+async function transcribe(env, bytes, voiceLanguage = 'te', context = '', customerLanguage = null, expect = '') {
   if (!env.AI || bytes.byteLength > MAX_TRANSCRIBE_BYTES) return { transcript: '' };
   let b64 = ''; const u8 = new Uint8Array(bytes);
   for (let i = 0; i < u8.length; i += 0x8000) b64 += String.fromCharCode(...u8.subarray(i, i + 0x8000));
@@ -116,13 +117,20 @@ async function transcribe(env, bytes, voiceLanguage = 'te', context = '', custom
     const c = confidence(first);
     return c != null && c < UNCLEAR_LOGPROB ? { unclear: true } : { transcript: clean(first) };
   }
-  const again = await runAi(env, WHISPER, { audio, task: 'transcribe', language: voiceLanguage, vad_filter: true, ...(WORD_HINTS[voiceLanguage] ? { initial_prompt: WORD_HINTS[voiceLanguage] } : {}) }).catch(() => null);
+  // Listen twice in the customer language — with and without the everyday-word hints — and keep the clearer one.
+  const [withHints, plain] = await Promise.all([
+    runAi(env, WHISPER, { audio, task: 'transcribe', language: voiceLanguage, vad_filter: true, ...(WORD_HINTS[voiceLanguage] ? { initial_prompt: WORD_HINTS[voiceLanguage] } : {}) }).catch(() => null),
+    WORD_HINTS[voiceLanguage] ? runAi(env, WHISPER, { audio, task: 'transcribe', language: voiceLanguage, vad_filter: true }).catch(() => null) : Promise.resolve(null),
+  ]);
+  const score = (r) => (clean(r) ? confidence(r) ?? -0.5 : -99);
+  const again = score(plain) > score(withHints) + 0.05 ? plain : withHints;
   const text = clean(again); const c = confidence(again);
   console.log(`[Media] voice note heard as "${lang}" (${sure.toFixed(2)}), transcribed as "${voiceLanguage}", confidence ${c == null ? '?' : c.toFixed(2)}`);
-  if (!text || (c != null && c < UNCLEAR_LOGPROB)) return { unclear: true };
-  const fixed = await cleanUp(env, text, voiceLanguage, context);
-  if (fixed?.unclear) return { unclear: true };
-  return { transcript: fixed?.text || text };
+  if (!text || (c != null && c < DOUBTFUL_LOGPROB)) return { unclear: true };
+  const doubtful = c != null && c < UNCLEAR_LOGPROB;
+  const fixed = await cleanUp(env, text, voiceLanguage, context, expect);
+  if (fixed?.unclear || (doubtful && !fixed?.text)) return { unclear: true };
+  return { transcript: fixed?.text || text, ...(doubtful ? { doubtful: true } : {}) };
 }
 
 /**
@@ -130,7 +138,7 @@ async function transcribe(env, bytes, voiceLanguage = 'te', context = '', custom
  * Returns { key, mime, size, filename, transcript } or null. Never throws: a failure just means the
  * Inbox shows "could not load" for that file.
  */
-export async function saveInboundMedia(env, { tenantId, accessToken, message, voiceLanguage, context, customerLanguage }) {
+export async function saveInboundMedia(env, { tenantId, accessToken, message, voiceLanguage, context, customerLanguage, expect }) {
   const t = message?.type;
   const m = message?.[t];
   const store = env.PRIVATE_MEDIA || env.MEDIA; // customers' files go to the private bucket
@@ -144,14 +152,14 @@ export async function saveInboundMedia(env, { tenantId, accessToken, message, vo
     const mime = String(info.mime_type || m.mime_type || res.headers.get('content-type') || 'application/octet-stream').split(';')[0].trim();
     const key = keyFor(tenantId, mime, m.filename);
     await store.put(key, bytes, { httpMetadata: { contentType: mime, cacheControl: 'private, max-age=31536000, immutable' } });
-    let transcript = '';
+    let transcript = ''; let heardDoubtful = false;
     if (t === 'audio' || t === 'voice') {
       // If the speech engine fails or is too slow, treat it as unclear: the customer is asked to type or resend.
-      const heard = await transcribe(env, bytes, voiceLanguage, context, customerLanguage).catch((err) => { console.warn('[Media] transcription failed:', err.message); return { unclear: true }; });
-      transcript = heard.transcript || '';
+      const heard = await transcribe(env, bytes, voiceLanguage, context, customerLanguage, expect).catch((err) => { console.warn('[Media] transcription failed:', err.message); return { unclear: true }; });
+      transcript = heard.transcript || ''; heardDoubtful = !!heard.doubtful;
       if (heard.unclear) return { key, mime, size: bytes.byteLength, filename: m.filename || null, transcript: '', unclear: true };
     }
-    return { key, mime, size: bytes.byteLength, filename: m.filename || null, transcript };
+    return { key, mime, size: bytes.byteLength, filename: m.filename || null, transcript, ...(transcript && heardDoubtful ? { doubtful: true } : {}) };
   } catch (err) {
     console.warn(`[Media] could not save ${t} ${m.id}:`, err.message);
     return null;

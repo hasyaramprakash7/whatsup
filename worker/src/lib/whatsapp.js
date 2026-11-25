@@ -17,11 +17,19 @@ export class WhatsAppClient {
   constructor(env, { accessToken, phoneNumberId }, { onSent } = {}) {
     const base = String(env.GRAPH_BASE_URL || 'https://graph.facebook.com').replace(/\/$/, '');
     this.endpoint = `${base}/${env.GRAPH_API_VERSION || 'v25.0'}/${phoneNumberId}/messages`;
+    // Staging has no WhatsApp number: GRAPH_BASE_URL "fake" accepts every message without sending it, so whole
+    // conversations can be run (and checked in the Inbox) before a release.
+    this.fake = env.GRAPH_BASE_URL === 'fake' && env.STAGE === 'staging';
     this.accessToken = accessToken;
     this.onSent = onSent || null;
   }
 
   async post(payload) {
+    if (this.fake) {
+      const data = { messaging_product: 'whatsapp', messages: [{ id: `wamid.staging${Date.now()}${Math.random().toString(36).slice(2, 8)}` }] };
+      if (this.onSent) await Promise.resolve(this.onSent(payload, data)).catch(() => {});
+      return data;
+    }
     let lastErr;
     for (let attempt = 0; attempt < 3; attempt++) {
       if (attempt) await sleep(attempt * 600);

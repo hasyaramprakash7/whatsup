@@ -9,8 +9,8 @@ import {
 import { sha256Hex, safeEqual, verifyMetaSignature, generateApiKey, encryptToken, TENANT_KEY_PREFIX, signWsTicket, verifyWsTicket } from './lib/crypto.js';
 import { normalizePhone, isValidPhone, parseCsv, pickPhone, pickName, nowIso } from './lib/text.js';
 import { validateFlow, validateProfile, validateAi, flowFields } from './lib/flow.js';
-import { translateFlow } from './lib/lang.js';
-import { recordEvent, findProblems, runMonitor } from './lib/monitor.js';
+import { translateFlow, translateCatalogs } from './lib/lang.js';
+import { recordEvent, findProblems, runMonitor, dailySummary } from './lib/monitor.js';
 import { forgetCustomer, applyRetention } from './lib/privacy.js';
 import { MEMBER_KEY_PREFIX, SESSION_PREFIX, ROLES, createMember, listMembers, getMember, memberByKey, revokeMember, memberAuth,
   startTwoStep, confirmTwoStep, checkTwoStep, disableTwoStep, signSession, verifySession, audit, recentActivity, describeAction, agentMayDo } from './lib/team.js';
@@ -901,8 +901,10 @@ export default {
   // Every 10 minutes: check the bot is answering and alert the admin's phone if not.
   scheduled: (event, env, ctx) => ctx.waitUntil(Promise.all([
     runMonitor(env).catch((err) => console.error('[Monitor] failed:', err.message)),
+    dailySummary(env, event.scheduledTime).catch((err) => console.error('[Monitor] daily summary failed:', err.message)),
     moveInboundToPrivate(env).catch((err) => console.error('[Media] move failed:', err.message)),
     // Chat messages and customers' files are kept for RETENTION_DAYS (default 365), then deleted.
     applyRetention(env, Number(env.RETENTION_DAYS) || 365).catch((err) => console.error('[Privacy] retention failed:', err.message)),
+    translateCatalogs(env).catch((err) => console.error('[Translate] failed:', err.message)),
   ])),
 };
