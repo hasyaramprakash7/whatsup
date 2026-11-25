@@ -18,7 +18,6 @@ import { TEMPLATES, flowFromTemplate, getTemplate, personalizeFlow } from './lib
 import { WhatsAppClient } from './lib/whatsapp.js';
 import { sendingSettings, dailyLimit, usage, sendingWindow, daysNeeded, costEach, cleanSending, templateShape, cleanParams, createCampaign, getCampaign, listCampaigns, listRecipients,
   setCampaignStatus, pauseAll, applyRecipientStatus, refreshMetaLimits, PAUSE_REASONS } from './lib/campaigns.js';
-import { metaSpending, campaignEstimate } from './lib/spending.js';
 import { outboundRecorder, publish } from './lib/chatlog.js';
 import { aiDecide } from './lib/ai.js';
 import { MEDIA_FILE, moveInboundToPrivate } from './lib/media.js';
@@ -800,19 +799,6 @@ app.post('/api/tenants/:tid/sending/refresh', tenantAccess(), async (c) => {
   if (!tenant) return fail(c, 404, 'Not found');
   await refreshMetaLimits(c.env, { tenants: [tenant], token: (t) => tenantAccessToken(c.env, t), force: true });
   return c.json({ success: true, limit: await limitInfo(c, await getTenant(c.env, tenant._id)) });
-});
-
-/** Spending for this business: Meta's pricing report (today / week / month, per number, per message type) + our estimate. */
-app.get('/api/spending/:tid', tenantAccess(), async (c) => {
-  const tenant = await getTenant(c.env, c.req.param('tid'));
-  if (!tenant) return fail(c, 404, 'Not found');
-  const offset = c.env.SITE_UTC_OFFSET || '+05:30';
-  const [meta, estimate, limit] = await Promise.all([
-    metaSpending(c.env, tenant, async (path) => graph(c, tenant, 'GET', path)),
-    campaignEstimate(c.env, tenant._id, { offset }),
-    limitInfo(c, tenant),
-  ]);
-  return c.json({ success: true, data: { ...meta, estimate, limit } });
 });
 
 /** Creates a campaign from the ticked contacts and starts (or schedules) it. Big lists continue day after day. */

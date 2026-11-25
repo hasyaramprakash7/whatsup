@@ -789,7 +789,7 @@
     state.inbox = null; state.builder = null; state.profileDraft = null; state.aiDraft = null; state.catalogAll = [];
     clearInterval(bcTimer); bcTimer = null;
     Object.assign(bcData, { limit: null, reasons: {}, campaigns: [], templates: null, tplError: '', msg: null });
-    bc = null; spendData = null;
+    bc = null;
   }
   async function selectTenant(id, { silent } = {}) {
     const seq = ++switchSeq;
@@ -959,7 +959,6 @@
     leads: { title: 'Leads', icon: 'users', render: renderLeads },
     confirmed: { title: 'Confirmed', icon: 'check', render: renderConfirmed },
     broadcast: { title: 'Broadcast', icon: 'megaphone', render: renderBroadcast },
-    pricing: { title: 'Bulk broadcast & pricing', icon: 'wallet', render: renderPricing },
     flow: { title: 'Flow Builder', icon: 'layers', render: renderBuilder },
     catalog: { title: 'Products & Services', icon: 'image', render: () => { catState.category = ''; renderCatalog(); } },
     ai: { title: 'AI Assistant', icon: 'sparkle', render: renderAi },
@@ -973,7 +972,7 @@
     const link = (p, extra = '') => `<a href="#/${p}" data-page="${p}" title="${esc(PAGES[p].title)}">${icon(PAGES[p].icon)}<span>${PAGES[p].title}</span>${extra}</a>`;
     $('#nav').innerHTML = `
       <div class="nav-label">Workspace</div>
-      ${link('overview')}${link('inbox', `<span class="badge" id="nav-unread" ${state.unreadChats ? '' : 'hidden'}>${state.unreadChats}</span>`)}${link('leads')}${link('confirmed')}${link('broadcast')}${link('pricing')}
+      ${link('overview')}${link('inbox', `<span class="badge" id="nav-unread" ${state.unreadChats ? '' : 'hidden'}>${state.unreadChats}</span>`)}${link('leads')}${link('confirmed')}${link('broadcast')}
       <div class="nav-label">Configure</div>
       ${link('flow')}${link('catalog')}${link('ai')}${link('profile')}${link('settings')}${link('team')}
       ${isAdmin() ? `<div class="nav-label">Admin</div>${link('clients')}` : ''}
@@ -1802,7 +1801,7 @@
     });
     clearInterval(bcTimer);
     bcTimer = setInterval(() => {
-      if (!['broadcast', 'pricing'].includes(state.route.page) || !$('#bc-campaigns')) { clearInterval(bcTimer); return; }
+      if (state.route.page !== 'broadcast' || !$('#bc-campaigns')) { clearInterval(bcTimer); return; }
       if (document.visibilityState === 'visible') loadCampaigns();
     }, 15000);
   }
@@ -1835,94 +1834,6 @@
     } });
   }
   let bc = null;
-
-  // ============================================================
-  // Bulk broadcast & pricing: what WhatsApp costs (from Meta), top-up link, daily limit, live campaigns
-  // ============================================================
-  let spendData = null;
-  const money = (n, cur) => { try { return new Intl.NumberFormat('en-IN', { style: 'currency', currency: cur || 'INR', maximumFractionDigits: 2 }).format(n || 0); } catch { return `${cur || '₹'} ${(n || 0).toFixed(2)}`; } };
-  function renderPricing() {
-    $('#page').innerHTML = `<div class="page-inner">
-      <div class="page-head"><div><h1>Bulk broadcast & pricing</h1><p>What WhatsApp messages cost this business, where to top up, your daily sending limit and live campaigns.</p></div>
-        <span class="spacer"></span><button class="btn" id="sp-refresh">${icon('refresh')}Refresh</button><a class="btn primary" href="#/broadcast">${icon('megaphone')}New bulk broadcast</a></div>
-      <div id="sp-banners"></div>
-      <div class="kpis" id="sp-kpis">${'<div class="card kpi"><div class="skeleton" style="height:64px"></div></div>'.repeat(4)}</div>
-      <div class="overview-grid">
-        <div class="stack">
-          <div class="card"><div class="card-head"><span class="section-icon blue">${icon('activity')}</span><div><h2>Spending, last 30 days</h2><p>From Meta's pricing report (Meta's figures can be a few hours behind)</p></div></div><div class="card-body" id="sp-chart"><div class="skeleton" style="height:140px"></div></div></div>
-          <div class="card"><div class="card-head"><span class="section-icon indigo">${icon('template')}</span><div><h2>This month by message type</h2><p>Marketing and utility are paid; service replies (customer wrote first) are free</p></div></div><div class="card-body" id="sp-cats"></div></div>
-          <div class="card"><div class="card-head"><span class="section-icon">${icon('phone')}</span><div><h2>This month by phone number</h2><p>Every WhatsApp number on this business's account</p></div></div><div class="card-body" id="sp-phones"></div></div>
-          <div class="card"><div class="card-head"><span class="section-icon blue">${icon('megaphone')}</span><div><h2>Campaigns</h2><p>Live: sent, delivered, read, replied and visits booked</p></div><span class="spacer"></span><button class="btn sm" id="q-refresh">${icon('refresh', 'sm')}Refresh</button></div><div class="card-body stack" id="bc-campaigns"><div class="skeleton" style="height:120px"></div></div></div>
-        </div>
-        <div class="stack">
-          <div class="card"><div class="card-head"><span class="section-icon amber">${icon('wallet')}</span><div><h2>Meta account</h2><p>What your WhatsApp messages cost at Meta</p></div></div><div class="card-body stack" id="sp-pay"><div class="skeleton" style="height:120px"></div></div></div>
-          <div class="card"><div class="card-head"><span class="section-icon amber">${icon('activity')}</span><div><h2>Daily sending limit</h2><p>People you can message first in 24 hours. Big lists continue by themselves the next day.</p></div></div>
-            <div class="card-body stack" id="bc-limit"><div class="skeleton" style="height:90px"></div></div></div>
-        </div>
-      </div></div>`;
-    $('#sp-refresh').addEventListener('click', () => { spendData = null; loadSpending(true); loadCampaigns(); });
-    $('#q-refresh').addEventListener('click', loadCampaigns);
-    wireCampaigns();
-    if (spendData && spendData.tenantId === state.tenantId) drawSpending(); else loadSpending();
-    loadCampaigns();
-  }
-  async function loadSpending(force) {
-    const tid = state.tenantId;
-    const btn = $('#sp-refresh'); if (force && btn) { btn.disabled = true; }
-    try {
-      const { data } = await api('GET', `/spending/${tid}`);
-      spendData = { ...data, tenantId: tid };
-      if (state.route.page === 'pricing' && state.tenantId === tid) drawSpending();
-    } catch (err) {
-      const el = $('#sp-banners'); if (el) { el.innerHTML = `<div class="banner red">${icon('alert')}<div>${esc(err.message)}</div></div>`; hydrateIcons(el); }
-    } finally { if (btn) btn.disabled = false; }
-  }
-  function drawSpending() {
-    const d = spendData; if (!d || !$('#sp-kpis')) return;
-    const cur = d.currency || 'INR'; const est = d.estimate || {};
-    // banners
-    const bn = [];
-    if (est.paymentProblem) bn.push(`<div class="banner red">${icon('alert')}<div><strong>Meta refused messages because of a payment problem.</strong> Campaigns are paused until the Meta account has funds again; then tap Resume on the campaign.</div></div>`);
-    if (d.demo) bn.push(`<div class="banner blue">${icon('info')}<div>This is the test copy: the numbers below are <strong>samples</strong>. The live app shows your real Meta figures.</div></div>`);
-    if (d.error) bn.push(`<div class="banner amber">${icon('alert')}<div><strong>Meta's pricing report is not available right now:</strong> ${esc(d.error)} The estimate from your campaigns is still shown.</div></div>`);
-    $('#sp-banners').innerHTML = bn.length ? `<div class="stack" style="gap:10px;margin-bottom:16px">${bn.join('')}</div>` : '';
-    // KPIs
-    const T = d.totals || {}; const V = d.volume || {};
-    const kpi = (label, key, sub) => `<div class="card kpi"><div class="row"><span class="label">${label}</span><span class="section-icon amber">${icon('wallet', 'sm')}</span></div><div class="value">${d.available ? money(T[key], cur) : '—'}</div><div class="sub">${d.available ? `${(V[key] || 0).toLocaleString('en-IN')} messages${sub ? ` · ${sub}` : ''}` : 'waiting for Meta'}</div></div>`;
-    $('#sp-kpis').innerHTML = [kpi('Today', 'today'), kpi('Last 7 days', 'week'), kpi('This month', 'month', d.freeMonth ? `${d.freeMonth.toLocaleString('en-IN')} free` : ''), kpi('Last 30 days', 'last30')].join('');
-    // chart
-    const days = d.days || []; const top = Math.max(...days.map((x) => x.cost), 0.01);
-    $('#sp-chart').innerHTML = d.available && days.some((x) => x.cost || x.volume) ? `
-      <div style="display:flex;align-items:flex-end;gap:3px;height:140px">${days.map((x) => `<div title="${esc(new Date(x.date + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }))}: ${esc(money(x.cost, cur))} · ${x.volume} messages" style="flex:1;min-width:4px;height:${Math.max(x.cost ? 3 : 1, (x.cost / top) * 100)}%;background:${x.cost ? 'var(--accent, #6366f1)' : 'var(--line, #e5e7eb)'};border-radius:3px 3px 0 0"></div>`).join('')}</div>
-      <div class="row small muted" style="justify-content:space-between;margin-top:6px"><span>${esc(new Date(days[0].date + 'T00:00:00').toLocaleDateString('en-IN', { day: 'numeric', month: 'short' }))}</span><span>Highest day ${esc(money(top, cur))}</span><span>Today</span></div>`
-      : '<div class="empty" style="padding:16px"><p>No paid messages in the last 30 days.</p></div>';
-    // categories
-    const cats = d.byCategory || [];
-    $('#sp-cats').innerHTML = cats.length ? `<table class="table"><thead><tr><th>Type</th><th>Messages</th><th>Cost</th><th>Per message</th></tr></thead><tbody>${cats.map((x) => `<tr><td>${esc(x.label)}</td><td>${x.volume.toLocaleString('en-IN')}</td><td><strong>${esc(money(x.cost, cur))}</strong></td><td>${x.volume && x.cost ? esc(money(x.cost / x.volume, cur)) : 'free'}</td></tr>`).join('')}</tbody></table>`
-      : `<p class="muted">${d.available ? 'No messages this month yet.' : 'Shown once Meta\'s report is available.'}</p>`;
-    // phones
-    const ph = d.byPhone || []; const Q = { GREEN: ['High', 'd-READ'], YELLOW: ['Medium', 'd-QUEUED'], RED: ['Low', 'd-FAILED'] };
-    $('#sp-phones').innerHTML = ph.length ? `<table class="table"><thead><tr><th>Number</th><th>Name</th><th>Quality</th><th>Messages</th><th>Cost</th></tr></thead><tbody>${ph.map((x) => {
-      const q = Q[String(x.quality || '').toUpperCase()];
-      return `<tr><td>${esc(x.display || fmtPhone(x.phone))}</td><td>${esc(x.name || '—')}</td><td>${q ? `<span class="pill ${q[1]}">${q[0]}</span>` : '—'}</td><td>${x.volume.toLocaleString('en-IN')}</td><td><strong>${esc(money(x.cost, cur))}</strong></td></tr>`;
-    }).join('')}</tbody></table>` : '<p class="muted">No numbers found on this account.</p>';
-    // what was used, straight from Meta (no balance form, no top-up buttons)
-    const L = d.limit || {};
-    $('#sp-pay').innerHTML = `
-      <div class="stack" style="gap:4px">
-        <span class="muted small">Used this month (from Meta)</span>
-        <div style="font-size:30px;font-weight:700;line-height:1.1">${d.available ? esc(money(T.month, cur)) : '—'}</div>
-        <p class="hint" style="margin:0">${d.available ? `${(V.month || 0).toLocaleString('en-IN')} messages · today ${esc(money(T.today, cur))} · plus 18% GST on Meta's bill` : 'Waiting for Meta’s report.'}</p>
-      </div>
-      <dl class="kv"><dt>Meta account</dt><dd>${esc(d.accountName || '—')}</dd>
-        <dt>Currency</dt><dd>${esc(cur)}</dd>
-        <dt>Payment status</dt><dd>${est.paymentProblem ? '<span class="pill d-FAILED">Problem</span>' : '<span class="pill d-READ">OK</span>'}</dd>
-        <dt>Daily limit</dt><dd>${L.unlimited ? 'Unlimited' : (L.limit ?? '—').toLocaleString?.('en-IN') ?? '—'} people${L.quality ? ` · quality ${esc(({ GREEN: 'High', YELLOW: 'Medium', RED: 'Low' })[String(L.quality).toUpperCase()] || L.quality)}` : ''}</dd></dl>
-      <div class="stat-chips"><div class="stat-chip"><b>${esc(money(est.waitingCost, cur))}</b><span>Still to send · ${(est.waitingPeople || 0).toLocaleString('en-IN')} people waiting</span></div>
-        <div class="stat-chip"><b>${esc(money(est.sentCostThisMonth, cur))}</b><span>Campaigns this month · ${(est.sentThisMonth || 0).toLocaleString('en-IN')} sent</span></div></div>
-      <p class="hint">${d.checkedAt ? `Checked ${esc(relTime(d.checkedAt))}. ` : ''}Meta's figures can be a few hours behind.</p>`;
-    hydrateIcons($('#page'));
-  }
 
   function renderBroadcast() {
     const t = state.tenant; const tp = t.templates || {};
