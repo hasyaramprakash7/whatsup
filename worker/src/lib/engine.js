@@ -3,13 +3,13 @@
 import { fill, normalizePhone } from './text.js';
 import { stepById, stepAfter } from './flow.js';
 import { DEFAULT_MESSAGES } from './templates.js';
-import { buildVisitSlots, parseSlotId, formatSlotLong, formatSlotShort, withinAiHours, parseRequestedTime, checkLocalTime, clockLabel } from './slots.js';
+import { buildVisitSlots, parseSlotId, formatSlotLong, formatSlotShort, withinAiHours, parseRequestedTime, checkLocalTime, clockLabel, localTimeString, earliestSlot } from './slots.js';
 import { aiDecide } from './ai.js';
 import { upsertLead, recentTurns, takeAiReply, listCatalog, itemCaption, layoutOf } from './db.js';
 import { publish } from './chatlog.js';
 import { detailsShort, hasPin, areasOf, inArea } from './itemfields.js';
 import { geocode, reverseGeocode, distanceKm, kmLabel, mapsLink } from './geo.js';
-import { detectLanguage, ui, DEFAULT_MESSAGES_TE } from './lang.js';
+import { detectLanguage, ui, DEFAULT_MESSAGES_TE, parseAmount, rupees, amountRange } from './lang.js';
 
 const RESEND_EVERY_MS = 10 * 60 * 1000;
 const MAX_UNEXPECTED = 2;             // re-ask this many times, then hand over to a person
@@ -50,6 +50,11 @@ const BOOK_INTENT = /\b(book|booking|visit|site ?visit|schedule|slot|appointment
 const GREETING = /^(h+i+|h+e+l+o+|hlo|helo|hai|hey+|hiya|namaste|namasthe|namaskar(am)?|vanakkam|good (morning|afternoon|evening|day)|start|restart|menu|hi there|hello there|hii there|hi andi|hello andi|నమస్తే|నమస్కారం|నమస్కారమండి|హాయ్|హాయ్ అండి|హలో|హలో అండి)[\s!.,?🙏👋😊]*$/iu;
 const RESTART_AFTER_MS = 30 * 60 * 1000;
 const isGreeting = (m) => m?.type === 'text' && GREETING.test((m.text?.body || '').trim());
+// The customer's own words carry a day or time (so a time the AI dug out of older messages is never acted on).
+const SAYS_TIME = /\d|o'?clock|\b(am|pm|today|tonight|tomorrow|morning|evening|afternoon|noon|monday|tuesday|wednesday|thursday|friday|saturday|sunday|repu|eeroju|ellundi|ganta\w*)\b|రేపు|ఈరోజు|ఇవాళ|ఎల్లుండి|గంట|ఉదయం|సాయంత్రం|మధ్యాహ్నం|వారం|ఒకటి|రెండు|మూడు|నాలుగు|ఐదు|ఆరు|ఏడు|ఎనిమిది|తొమ్మిది|పది|పదకొండు|పన్నెండు/i;
+// After a booking: cancel / reschedule.
+const CANCEL_INTENT = /\b(cancel|cancell?ation|not coming|can'?t come|cannot come|won'?t come)\b|రద్దు|క్యాన్సిల్|రాలేను|రావడం లేదు|రాను/i;
+const RESCHEDULE_INTENT = /\b(reschedule|re-schedule|postpone|prepone|another time|different time|other time|change (the |my )?(time|date|slot|visit|booking))\b|మార్చు|మార్చండి|వేరే సమయం|వేరే టైం|వేరే టైమ్/i;
 // Asking for a human: only then does the bot pause for the team.
 const WANTS_PERSON = /\b(call me|call|calling|callback|call back|person|human|agent|executive|manager|someone|somebody|talk to|speak to|speak with|representative|customer care|phone me|ring me)\b|కాల్|మనిషి|మాట్లాడాలి|మాట్లాడతాను|మాట్లాడండి|ఫోన్ చేయండి|ఫోన్ చెయ్యండి/i;
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
@@ -266,6 +271,18 @@ export class Conversation {
       return this.continueInLanguage();
     }
 
+    // Cancel / keep a booking (buttons from afterFlow).
+    if (iid === 'BOOKING_CANCEL' || iid === 'BOOKING_KEEP') {
+      const what = this.bookingWords();
+      if (iid === 'BOOKING_KEEP' || !this.upcomingBooking()) { await this.bot.text(this.phone, this.U.kept(what)).catch(() => {}); return this.touch(); }
+      const visitField = this.visitStep()?.field;
+      await this.saveLead({ set: { bookedAt: null, status: 'QUALIFIED' }, mergeData: visitField ? { [visitField]: `Cancelled (was ${this.lead?.data?.[visitField] || '—'})` } : {} });
+      await this.bot.text(this.phone, this.U.cancelled(what)).catch(() => {});
+      await this.alertTeam({ kind: 'handoff', headline: 'Visit cancelled', details: `Cancelled: ${what}`,
+        text: `❌ *VISIT CANCELLED*\n\n• *Name:* ${this.lead?.name || '—'}\n• *Phone:* +${this.phone}\n• *Was:* ${what}` });
+      return this.touch();
+    }
+
     // Tapped a product in a photo list: send that one photo. Where they are in the flow doesn't change,
     // and the question above stays tappable, so nothing is repeated (each message costs money).
     if (iid?.startsWith('ITEM_')) {
@@ -476,7 +493,7 @@ export class Conversation {
       if (step.type === 'slots' && this.state.wantTime) { // the time they asked for earlier comes first
         const req = checkLocalTime(this.state.wantTime, new Date(), this.visitHours(step));
         this.state.wantTime = null;
-        if (req) { this.state.stepId = step.id; this.state.unexpected = 0; await this.offerTime(step, req); return; }
+        if (req) { this.state.stepId = step.id; this.state.unexpected = 0; await this.offerTime(step, { ...req, noted: true }); return; }
       }
       await this.ask(step);
       this.state.stepId = step.id;
@@ -550,11 +567,12 @@ export class Conversation {
       const fields = this.fieldSummary();
       await this.alertTeam({
         kind: 'booking',
-        headline: 'New booking',
+        headline: this.state.rescheduling ? 'Visit rescheduled' : 'New booking',
         details: fields.map(([l, v]) => `${l}: ${v}`).join(' · ') || 'Completed the conversation',
         text: `🎉 *NEW ${String(this.tenant.profile?.displayName || this.tenant.businessName).toUpperCase()} LEAD*\n\n• *Name:* ${this.lead.name || '—'}\n• *Phone:* +${this.phone}\n${fields.map(([l, v]) => `• *${l}:* ${v}`).join('\n')}`,
       });
     }
+    this.state.rescheduling = false;
   }
 
   fieldSummary() {
@@ -625,12 +643,17 @@ export class Conversation {
       const req = parseRequestedTime(textOf(message), new Date(), this.visitHours(step));
       if (req) return this.offerTime(step, req);
     }
+    // "My budget is 20 lakhs" / "రెండు కోట్లు": exact answer from the real prices (never an AI guess about money).
+    if (message.type === 'text') {
+      const amount = parseAmount(textOf(message));
+      if (amount) { const handled = await this.budgetReply(step, amount); if (handled) return handled; }
+    }
     // "Book me today 4 PM" before the time step: remember it, say so, and carry on with this question.
     const visitStep = this.visitStep();
     if (step.type !== 'slots' && visitStep && message.type === 'text' && BOOK_INTENT.test(textOf(message))) {
       const req = parseRequestedTime(textOf(message), new Date(), this.visitHours(visitStep));
       if (req && !req.error) {
-        this.state.wantTime = `${new Date(req.at.getTime() + 330 * 60000).toISOString().slice(0, 16).replace('T', ' ')}`;
+        this.state.wantTime = localTimeString(req.at);
         await this.bot.text(this.phone, this.U.timeNoted);
         return this.ask(step, { short: true });
       }
@@ -649,6 +672,7 @@ export class Conversation {
         const r = step.input === 'location' ? await this.answerLocation(fake) : this.answer(step, fake);
         if (r && !r.invalid && !r.passed && !r.prompted && !r.location) return this.accept(step, r);
       }
+      if (d?.requestedTime && !SAYS_TIME.test(textOf(message))) d.requestedTime = null; // not said now: ignore
       // "రేపు మూడు గంటలకి…": the AI understood a day and time in any language → one-tap booking of it.
       if (d?.requestedTime && step.type === 'slots') {
         const req = checkLocalTime(d.requestedTime, new Date(), this.visitHours(step));
@@ -687,6 +711,19 @@ export class Conversation {
   // Real questions go to the AI; without an answer the closing message is sent once, then a person takes over.
   async afterFlow(message) {
     const visit = this.visitStep();
+    if (visit && this.upcomingBooking() && message.type === 'text') {
+      const text = textOf(message);
+      if (CANCEL_INTENT.test(text)) {
+        this.state.cancelAsked = Date.now();
+        return this.bot.buttons(this.phone, this.U.cancelAsk(this.bookingWords()), [{ id: 'BOOKING_CANCEL', title: this.U.cancelYes }, { id: 'BOOKING_KEEP', title: this.U.cancelNo }]);
+      }
+      if (RESCHEDULE_INTENT.test(text)) {
+        this.reopenVisit(visit); this.state.rescheduling = true;
+        const req = parseRequestedTime(text, new Date(), this.visitHours(visit));
+        if (req) return this.offerTime(visit, req);
+        return this.ask({ ...visit, _custom: true, text: this.U.rescheduleAsk(this.bookingWords()) });
+      }
+    }
     if (visit && this.state.done && message.type === 'text') {
       const text = textOf(message);
       const req = parseRequestedTime(text, new Date(), this.visitHours(visit));
@@ -697,14 +734,19 @@ export class Conversation {
         return this.ask({ ...visit, _custom: true, text: this.U.askWhen(it?.name, this.visitWord() === 'visit') });
       }
     }
+    if (message.type === 'text') {
+      const amount = parseAmount(textOf(message));
+      if (amount) { const handled = await this.budgetReply(null, amount); if (handled) return null; }
+    }
     if (isAck(message)) {
       if (this.state.done && !this.state.closed) { this.state.closed = true; await this.bot.text(this.phone, this.msg('completed')); }
       return null;
     }
     if (this.aiCfg.answerAfterFlow !== false && await this.aiAvailable(message)) {
-      const d = await aiDecide(this.env, { tenant: this.tenant, aiCfg: this.aiCfg, pending: null, catalog: await this.catalog(), customerPlace: this.customerPlace(), history: await recentTurns(this.env, this.tenant._id, this.phone), language: this.lang });
+      const d = await aiDecide(this.env, { tenant: this.tenant, aiCfg: this.aiCfg, pending: null, catalog: await this.catalog(), customerPlace: this.customerPlace(), history: await recentTurns(this.env, this.tenant._id, this.phone), language: this.lang, booking: this.bookingSummary() });
       if (d?.action === 'handoff') return this.aiHandoff(message, d.reply, null);
       const visitStep = this.visitStep();
+      if (d?.requestedTime && !SAYS_TIME.test(textOf(message))) d.requestedTime = null;
       if (d?.requestedTime && visitStep) {
         const req = checkLocalTime(d.requestedTime, new Date(), this.visitHours(visitStep));
         if (req) { this.reopenVisit(visitStep); return this.offerTime(visitStep, req); }
@@ -716,7 +758,39 @@ export class Conversation {
     return this.handoff(message, null);
   }
 
+  // ---------- budget ----------
+  /**
+   * A budget the customer stated: on a budget question, the range it falls in is picked for them; otherwise
+   * the projects that fit (or, if none, the closest ones) are shown, then the waiting question again.
+   */
+  async budgetReply(step, amount) {
+    if (step?.type === 'choice') {
+      const opt = step.options.find((o) => { const r = amountRange(o.label) || amountRange(o.title); return r && amount >= r[0] && amount <= r[1]; });
+      if (opt) { await this.accept(step, { value: opt.label, next: opt.next, itemId: opt.itemId || null }); return true; }
+    }
+    const priced = (await this.catalog()).map((it) => ({ it, p: parseAmount(it.price) })).filter((x) => x.p);
+    if (!priced.length) return null;
+    const fit = priced.filter((x) => x.p <= amount * 1.05).sort((a, b) => b.p - a.p);   // best that fit first
+    const pick = (fit.length ? fit : priced.sort((a, b) => a.p - b.p)).slice(0, 3).map((x) => x.it);
+    await this.sendItemList(pick.length > 1 ? pick : [...pick], (fit.length ? this.U.budgetFits : this.U.budgetClosest)(rupees(amount)));
+    if (step) await this.ask(step, { short: true });
+    return true;
+  }
+
   // ---------- booking ----------
+  upcomingBooking() { const at = this.lead?.bookedAt && new Date(this.lead.bookedAt); return at && at.getTime() > Date.now() ? at : null; }
+  /** "site visit on Thursday, 26 Nov 2026 at 10:00 AM" (for the customer, in their language). */
+  bookingWords() {
+    const at = this.upcomingBooking();
+    return this.U.bookingWord(at ? formatSlotLong(at, this.lang) : '—', this.visitWord() === 'visit');
+  }
+  /** For the AI: what is already booked. */
+  bookingSummary() {
+    const at = this.upcomingBooking(); if (!at) return null;
+    const pick = this.flow.steps.find((s) => s.type === 'choice' && s.options?.some((o) => o.itemId));
+    const project = pick && this.lead?.data?.[pick.field];
+    return `${this.visitWord() === 'visit' ? 'site visit' : 'booking'}${project ? ` to ${project}` : ''} on ${formatSlotLong(at)}`;
+  }
   visitStep() { return this.flow.steps.find((s) => s.type === 'slots') || null; }
   visitWord() { return this.tenant.industry === 'real_estate' ? 'visit' : 'book'; }
   visitHours(step) { return { from: step.hoursFrom || '09:00', to: step.hoursTo || '19:00' }; }
@@ -733,12 +807,17 @@ export class Conversation {
     this.state.askedAt = Date.now(); this.state.askedStep = step.id; this.state.unexpected = 0;
     if (!req.error) {
       const others = listed.filter((s) => s.at.getTime() !== req.at.getTime()).slice(0, 2);
-      return this.bot.buttons(this.phone, this.U.timeWorks(formatSlotLong(req.at, this.lang), visit),
+      return this.bot.buttons(this.phone, (req.noted ? this.U.notedTimeWorks : this.U.timeWorks)(formatSlotLong(req.at, this.lang), visit),
         [{ id: `SLOT_${req.at.getTime()}`, title: ((t) => (`✅ ${t}`.length <= 20 ? `✅ ${t}` : t))(formatSlotShort(req.at, new Date(), this.lang)) }, ...others.map((s) => ({ id: s.id, title: s.title }))]);
     }
     const h = this.visitHours(step);
     const why = req.error === 'hours' ? this.U.outsideHours(clockLabel(h.from), clockLabel(h.to), visit) : req.error === 'soon' ? this.U.tooSoon : this.U.tooFar;
-    return this.bot.buttons(this.phone, `${why} ${this.U.pickTimes}`, listed.map((s) => ({ id: s.id, title: s.title })));
+    const first = req.error === 'far' ? null : earliestSlot(new Date(), h);
+    const buttons = [
+      ...(first ? [{ id: `SLOT_${first.getTime()}`, title: formatSlotShort(first, new Date(), this.lang) }] : []),
+      ...listed.filter((s) => !first || s.at.getTime() !== first.getTime()).map((s) => ({ id: s.id, title: s.title })),
+    ].slice(0, 3);
+    return this.bot.buttons(this.phone, `${why}${first ? ` ${this.U.earliestToday(formatSlotLong(first, this.lang))}` : ''} ${this.U.pickTimes}`, buttons);
   }
 
   /** Opened a project after their visit was booked (or while choosing a time): offer a visit for it. */

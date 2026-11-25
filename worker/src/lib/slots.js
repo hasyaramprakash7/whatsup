@@ -189,4 +189,16 @@ function checkLocalTime(str, now = new Date(), { from = '09:00', to = '19:00', l
 /** "9 AM" for "09:00". */
 const clockLabel = (s) => { const v = hm(s); const h = Math.floor(v / 60); const m = v % 60; return `${h % 12 || 12}${m ? `:${String(m).padStart(2, '0')}` : ''} ${h < 12 ? 'AM' : 'PM'}`; };
 
-export { buildVisitSlots, parseSlotId, formatSlotShort, formatSlotLong, DEFAULT_PLAN, parseRequestedTime, checkLocalTime, clockLabel };
+/** "2026-11-25 16:30" in site-local time. */
+function localTimeString(at) { return toLocal(at).toISOString().slice(0, 16).replace('T', ' '); }
+/** The first half-hour that can still be booked (lead time, visiting hours, from 9 AM tomorrow at the latest). */
+function earliestSlot(now = new Date(), hours = {}) {
+  let t = Math.ceil((now.getTime() + 61 * 60000) / (30 * 60000)) * 30 * 60000;
+  for (let i = 0; i < 6 * 48; i++, t += 30 * 60000) {
+    const r = checkLocalTime(localTimeString(new Date(t)), now, hours);
+    if (r && !r.error) return r.at;
+  }
+  return null;
+}
+
+export { buildVisitSlots, parseSlotId, formatSlotShort, formatSlotLong, DEFAULT_PLAN, parseRequestedTime, checkLocalTime, clockLabel, localTimeString, earliestSlot };

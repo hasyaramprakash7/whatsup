@@ -67,6 +67,16 @@ export const UI = {
     voiceUnclearAgain: "Sorry, I still couldn't hear that clearly 🙏 Please type your message — I'll reply right away.",
     voiceRetry: "Sorry, I couldn't catch that voice note clearly 🙏 Could you please type it, or send the voice note again speaking a little slowly?",
     chooseBelow: 'Please choose below 👇',
+    budgetFits: (amt) => `Here are our options within your budget of *${amt}* 👇`,
+    budgetClosest: (amt) => `We don't have a property within *${amt}* right now — these are the closest to your budget 👇`,
+    notedTimeWorks: (when, visit) => `You asked for *${when}* 👍\nTap below to confirm your ${visit ? 'site visit' : 'booking'}, or choose another time:`,
+    earliestToday: (when) => `The earliest we can arrange is *${when}*.`,
+    cancelAsk: (what) => `Do you want to cancel your ${what}?`,
+    cancelYes: 'Yes, cancel', cancelNo: 'No, keep it',
+    cancelled: (what) => `Your ${what} is cancelled. If you'd like to come another time, just send the day and time 🙏`,
+    kept: (what) => `Great — your ${what} stays as it is 👍`,
+    rescheduleAsk: (what) => `Sure! Pick a new time for your ${what}, or type the day and time you prefer 👇`,
+    bookingWord: (when, visit) => `${visit ? 'site visit' : 'booking'} on ${when}`,
     timeNoted: "Sure! 👍 I've noted your preferred time — I'll confirm it with you in a moment. First, please answer this:",
   },
   te: {
@@ -93,6 +103,16 @@ export const UI = {
     voiceUnclearAgain: 'క్షమించండి, ఇంకా స్పష్టంగా వినిపించలేదు 🙏 దయచేసి మీ మెసేజ్ టైప్ చేయండి — వెంటనే జవాబిస్తాం.',
     voiceRetry: 'క్షమించండి, ఆ వాయిస్ నోట్ స్పష్టంగా వినిపించలేదు 🙏 దయచేసి టైప్ చేయండి, లేదా కొంచెం నెమ్మదిగా మాట్లాడి మళ్ళీ పంపండి.',
     chooseBelow: 'దయచేసి కింద ఎంచుకోండి 👇',
+    budgetFits: (amt) => `మీ బడ్జెట్ *${amt}* లో మా ఆప్షన్లు ఇవి 👇`,
+    budgetClosest: (amt) => `ప్రస్తుతం *${amt}* లోపు ప్రాపర్టీ లేదు — మీ బడ్జెట్‌కి దగ్గరగా ఉన్నవి ఇవి 👇`,
+    notedTimeWorks: (when, visit) => `మీరు *${when}* అడిగారు 👍\nమీ ${visit ? 'సైట్ విజిట్' : 'బుకింగ్'} కన్ఫర్మ్ చేయడానికి కింద నొక్కండి, లేదా వేరే సమయం ఎంచుకోండి:`,
+    earliestToday: (when) => `మేము ఏర్పాటు చేయగల తొలి సమయం *${when}*.`,
+    cancelAsk: (what) => `మీ ${what} రద్దు చేయాలనుకుంటున్నారా?`,
+    cancelYes: 'అవును, రద్దు చేయండి', cancelNo: 'వద్దు, ఉంచండి',
+    cancelled: (what) => `మీ ${what} రద్దు చేశాం. వేరే సమయంలో రావాలనుకుంటే, రోజు, సమయం పంపండి 🙏`,
+    kept: (what) => `సరే — మీ ${what} అలాగే ఉంది 👍`,
+    rescheduleAsk: (what) => `తప్పకుండా! మీ ${what} కోసం కొత్త సమయం ఎంచుకోండి, లేదా మీకు నచ్చిన రోజు, సమయం టైప్ చేయండి 👇`,
+    bookingWord: (when, visit) => `${when} ${visit ? 'సైట్ విజిట్' : 'బుకింగ్'}`,
     timeNoted: 'తప్పకుండా! 👍 మీకు నచ్చిన సమయం నోట్ చేసుకున్నాం — కొంచెం సేపట్లో కన్ఫర్మ్ చేస్తాం. ముందుగా దీనికి జవాబు ఇవ్వండి:',
   },
 };
@@ -130,6 +150,37 @@ export function timeWordsToEnglish(text) {
   s = s.toLowerCase();
   for (const [re, en] of TENGLISH_TIME_WORDS) s = s.replace(re, en);
   return s;
+}
+
+// ---------- money: "20 lakhs", "twenty lakhs", "2 crores", "రెండు కోట్లు", "₹1.45 Cr", "50L" → rupees ----------
+const EN_TENS = { twenty: 20, thirty: 30, forty: 40, fifty: 50, sixty: 60, seventy: 70, eighty: 80, ninety: 90 };
+const EN_UNITS = { one: 1, two: 2, three: 3, four: 4, five: 5, six: 6, seven: 7, eight: 8, nine: 9, ten: 10, eleven: 11, twelve: 12, thirteen: 13, fourteen: 14, fifteen: 15, sixteen: 16, seventeen: 17, eighteen: 18, nineteen: 19 };
+const TE_NUMS = [['తొంభై', 90], ['ఎనభై', 80], ['డెబ్భై', 70], ['అరవై', 60], ['యాభై', 50], ['నలభై', 40], ['ముప్పై', 30], ['ఇరవై', 20], ['పదిహేను', 15], ['పన్నెండు', 12], ['పదకొండు', 11], ['పది', 10],
+  ['తొమ్మిది', 9], ['ఎనిమిది', 8], ['ఏడు', 7], ['ఆరు', 6], ['ఐదు', 5], ['నాలుగు', 4], ['మూడు', 3], ['రెండు', 2], ['ఒకటిన్నర', 1.5], ['ఒక', 1], ['ఒకటి', 1], ['వంద', 100]];
+/** The first rupee amount in a text, or null. Needs a unit (lakh / crore / L / Cr), so "2 BHK" or "4 PM" never count. */
+export function parseAmount(text) {
+  let s = ` ${String(text || '').toLowerCase().replace(/,/g, '')} `;
+  for (const [w, n] of TE_NUMS) s = s.split(w).join(` ${n} `);
+  s = s.replace(/\b(twenty|thirty|forty|fifty|sixty|seventy|eighty|ninety)[\s-]*(one|two|three|four|five|six|seven|eight|nine)?\b/g, (m, t, u) => ` ${EN_TENS[t] + (u ? EN_UNITS[u] : 0)} `)
+    .replace(/\b(one|two|three|four|five|six|seven|eight|nine|ten|eleven|twelve|thirteen|fourteen|fifteen|sixteen|seventeen|eighteen|nineteen)\b/g, (m) => ` ${EN_UNITS[m]} `)
+    // "1 and a half crore" → 1.5, "half a crore" → 0.5
+    .replace(/(\d+(?:\.\d+)?)\s+and\s+a\s+half\b/g, (m, n) => ` ${Number(n) + 0.5} `)
+    .replace(/\bhalf\s+a\b/g, ' 0.5 ');
+  const m = /(\d+(?:\.\d+)?)\s*(lakhs?|lacs?|lakh|lac|l\b|crores?|cr\b|cr\.|లక్షలు|లక్షల|లక్ష|కోట్లు|కోట్ల|కోటి)/.exec(s);
+  if (!m) return null;
+  const n = Number(m[1]); if (!Number.isFinite(n) || n <= 0) return null;
+  return Math.round(n * (/^(cr|crore|కోట)/.test(m[2]) ? 1e7 : 1e5));
+}
+/** ₹ amount for people: "₹48 Lakh", "₹1.45 Cr". */
+export const rupees = (n) => (n >= 1e7 ? `₹${+(n / 1e7).toFixed(2)} Cr` : `₹${+(n / 1e5).toFixed(2)} Lakh`);
+/** A budget option's range from its label: "₹85 Lakh - ₹1.2 Cr" → [85L, 1.2Cr]; "₹1.8 Cr+" → [1.8Cr, ∞]; "Under ₹50 Lakh" → [0, 50L]. */
+export function amountRange(label) {
+  const parts = String(label || '').split(/\s(?:-|–|to)\s/);
+  const a = parseAmount(parts[0]); const b = parts[1] ? parseAmount(parts[1]) : null;
+  if (a && b) return [Math.min(a, b), Math.max(a, b)];
+  if (a && /\+|above|over|more/i.test(label)) return [a, Infinity];
+  if (a && /under|below|upto|up to|less/i.test(label)) return [0, a];
+  return null;
 }
 
 // ---------- flow translation (AI, once; the business can edit the result) ----------

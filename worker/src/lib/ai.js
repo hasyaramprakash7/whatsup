@@ -41,7 +41,7 @@ function businessFacts(tenant) {
   return lines.join('\n');
 }
 
-function systemPrompt(tenant, aiCfg, pending, catalog, customerPlace = null, offset = '+05:30', language = null) {
+function systemPrompt(tenant, aiCfg, pending, catalog, customerPlace = null, offset = '+05:30', language = null, booking = null) {
   const name = tenant.profile?.displayName || tenant.businessName;
   const items = catalogFacts(catalog);
   return [
@@ -55,6 +55,8 @@ function systemPrompt(tenant, aiCfg, pending, catalog, customerPlace = null, off
     '',
     'RULES:',
     '- Answer ONLY from the business information above. Never invent prices, availability, offers, addresses or policies.',
+    items ? '- BUDGET: when the customer says their budget (e.g. "20 lakhs", "2 crores", "50 L"), compare it with the prices above: answer with the products that fit or come closest (cheapest first, at most 3; put their ids in "item_ids") and say so in one line. A low budget is never a reason to hand over.' : '',
+    '- Opinions like "is it good?", "is it worth it?": answer only with the facts above (features, location, possession, availability) — never promise returns, appreciation or quality you were not told about.',
     '- If the answer is not in the information, or the customer asks for a person, a call, a complaint or anything sensitive, use action "handoff" and say a team member will contact them.',
     language === 'te'
       ? '- The customer speaks Telugu: ALWAYS reply in simple, everyday Telugu (Telugu script), even if they write in English letters. Keep project names, prices, numbers and common English words (BHK, site visit, project) as they are. Keep replies short: 1–3 sentences, plain WhatsApp text (you may use *bold*). The same rule applies in Telugu: state ONLY facts written in the business information above; if something (schools, hospitals, distances, offers, loans, amenities…) is not written there, do NOT say yes or no — say our team will confirm it (action "handoff" if they insist).'
@@ -78,6 +80,8 @@ function systemPrompt(tenant, aiCfg, pending, catalog, customerPlace = null, off
         + (pending.slots ? `
 Use "select" only when BOTH the day and the time the customer asked for match that option exactly (e.g. "tomorrow 4pm"). Never pick a different day or time for them.` : '')
       : 'The customer has finished the guided conversation. Answer their questions with action "answer". If they show interest in a product or project, end by inviting them to book a visit: they can type the day and time they prefer (for example "Saturday 11 AM"). If they ask to visit or book at a specific day and time (in any language), set "requested_time" to it as "YYYY-MM-DD HH:MM" (24-hour, local time; 1–8 without AM/PM mean PM). Today is ' + todayLabel(offset) + '.',
+    '',
+    booking ? `ALREADY BOOKED: the customer has a confirmed ${booking}. Do not ask them to book that again; mention it when relevant (e.g. "You're booked for … 👍"). They can ask to reschedule or cancel.` : '',
     '',
     'Respond with JSON only: {"action": "answer" | "select" | "handoff", "option_id": string or null, "reply": string, "item_ids": string[], "send_document": boolean, "requested_time": "YYYY-MM-DD HH:MM" or null}.',
   ].filter((l) => l !== '').join('\n');
@@ -103,9 +107,9 @@ const turnText = (t) => {
  * pending: { question, options: [{ id, title }] } while a step waits for an answer, else null.
  * Returns { action, optionId, reply } or null if the AI is unavailable or returned nonsense.
  */
-export async function aiDecide(env, { tenant, aiCfg, pending, history, catalog = [], customerPlace = null, language = null }) {
+export async function aiDecide(env, { tenant, aiCfg, pending, history, catalog = [], customerPlace = null, language = null, booking = null }) {
   if (!env.AI) return null;
-  const messages = [{ role: 'system', content: systemPrompt(tenant, aiCfg, pending, catalog, customerPlace, env.SITE_UTC_OFFSET, language) }];
+  const messages = [{ role: 'system', content: systemPrompt(tenant, aiCfg, pending, catalog, customerPlace, env.SITE_UTC_OFFSET, language, booking) }];
   for (const t of history) messages.push({ role: t.direction === 'in' ? 'user' : 'assistant', content: turnText(t).slice(0, 1500) });
   if (messages[messages.length - 1].role !== 'user') return null;
 
