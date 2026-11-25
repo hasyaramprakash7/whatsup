@@ -812,10 +812,7 @@ app.get('/api/spending/:tid', tenantAccess(), async (c) => {
     campaignEstimate(c.env, tenant._id, { offset }),
     limitInfo(c, tenant),
   ]);
-  const s = sendingSettings(tenant);
   return c.json({ success: true, data: { ...meta, estimate, limit } });
-});
-
 });
 
 /** Creates a campaign from the ticked contacts and starts (or schedules) it. Big lists continue day after day. */
