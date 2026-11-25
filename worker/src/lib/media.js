@@ -27,23 +27,69 @@ async function graphJson(env, accessToken, path) {
   return data;
 }
 
+// Google Speech-to-Text knows Indian languages far better than Whisper (Telugu especially).
+// Used only when Whisper isn't sure, so the free monthly minutes last. Needs the GOOGLE_SPEECH_KEY secret.
+const GOOGLE_STT = 'https://speech.googleapis.com/v1p1beta1/speech:recognize';
+const GOOGLE_RATES = [8000, 12000, 16000, 24000, 48000];
+const GOOGLE_MAX_BYTES = 9 * 1024 * 1024; // sync requests: up to 1 minute of audio, 10 MB
+
+/** Sample rate from an Ogg Opus header (WhatsApp voice notes: 48 kHz mono); Google needs it exactly. */
+function opusRate(u8) {
+  const tag = [0x4f, 0x70, 0x75, 0x73, 0x48, 0x65, 0x61, 0x64]; // "OpusHead"
+  for (let i = 0; i < Math.min(u8.length - 20, 512); i++) {
+    if (tag.every((c, j) => u8[i + j] === c)) {
+      const rate = u8[i + 12] | (u8[i + 13] << 8) | (u8[i + 14] << 16) | (u8[i + 15] << 24);
+      return GOOGLE_RATES.includes(rate) ? rate : 48000;
+    }
+  }
+  return null; // not Ogg Opus
+}
+
+/** Text from Google for a voice note in the customer language (with English and Hindi as alternatives), or ''. */
+async function googleTranscribe(env, u8, b64, voiceLanguage) {
+  if (!env.GOOGLE_SPEECH_KEY || u8.byteLength > GOOGLE_MAX_BYTES) return '';
+  const rate = opusRate(u8);
+  if (!rate) return '';
+  const main = `${voiceLanguage}-IN`;
+  const alternatives = ['en-IN', 'hi-IN'].filter((l) => l !== main);
+  const res = await fetch(`${GOOGLE_STT}?key=${encodeURIComponent(env.GOOGLE_SPEECH_KEY)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({
+      config: { encoding: 'OGG_OPUS', sampleRateHertz: rate, audioChannelCount: 1, languageCode: main, alternativeLanguageCodes: alternatives, enableAutomaticPunctuation: true },
+      audio: { content: b64 },
+    }),
+    signal: AbortSignal.timeout(20000),
+  });
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw new Error(`Google speech ${res.status}: ${data?.error?.message || 'error'}`);
+  return (data.results || []).map((r) => r.alternatives?.[0]?.transcript || '').join(' ').replace(/\s+/g, ' ').trim().slice(0, 2000);
+}
+
 /**
- * Plain text from Whisper's answer, or '' when it heard nothing.
- * Indian languages sound alike to Whisper: Telugu speech often comes back as Tamil or Gujarati text.
- * So: listen once with no hint; if it hears English, Hindi or the business's own customer language, keep it.
- * Anything else (or a shaky guess) is heard again as the customer language (default Telugu).
+ * Plain text for a voice note, or '' when nothing was heard.
+ * 1) Whisper (free) listens with no hint; clear English or Hindi is kept as is.
+ * 2) Otherwise — Telugu, or a shaky guess (Whisper often writes Telugu as Tamil/Gujarati) — Google, in the
+ *    business's customer language (default Telugu) with English and Hindi as alternatives.
+ * 3) No Google key, or Google heard nothing: Whisper again, told the customer language.
  */
 async function transcribe(env, bytes, voiceLanguage = 'te') {
   if (!env.AI || bytes.byteLength > MAX_TRANSCRIBE_BYTES) return '';
-  let b64 = ''; const u8 = new Uint8Array(bytes);
-  for (let i = 0; i < u8.length; i += 0x8000) b64 += String.fromCharCode(...u8.subarray(i, i + 0x8000));
-  const audio = btoa(b64);
+  const u8 = new Uint8Array(bytes); let bin = '';
+  for (let i = 0; i < u8.length; i += 0x8000) bin += String.fromCharCode(...u8.subarray(i, i + 0x8000));
+  const audio = btoa(bin);
   const clean = (r) => String(r?.text || '').replace(/\s+/g, ' ').trim().slice(0, 2000);
   const first = await env.AI.run(WHISPER, { audio, task: 'transcribe' });
   const lang = first?.transcription_info?.language; const sure = Number(first?.transcription_info?.language_probability ?? 1);
-  if (!voiceLanguage || voiceLanguage === 'auto' || !lang || lang === voiceLanguage || ((lang === 'en' || lang === 'hi') && sure >= 0.6)) return clean(first);
-  const again = await env.AI.run(WHISPER, { audio, task: 'transcribe', language: voiceLanguage }).catch(() => null);
-  console.log(`[Media] voice note heard as "${lang}" (${sure.toFixed(2)}), transcribed again as "${voiceLanguage}"`);
+  if (!voiceLanguage || voiceLanguage === 'auto' || ((lang === 'en' || lang === 'hi') && sure >= 0.6)) return clean(first);
+  if (lang === voiceLanguage && sure >= 0.9 && !env.GOOGLE_SPEECH_KEY) return clean(first);
+  const target = voiceLanguage;
+  try {
+    const g = await googleTranscribe(env, u8, audio, target);
+    if (g) { console.log(`[Media] voice note heard as "${lang}" (${sure.toFixed(2)}), transcribed by Google as ${target}-IN`); return g; }
+  } catch (err) { console.warn('[Media]', err.message); }
+  const again = await env.AI.run(WHISPER, { audio, task: 'transcribe', language: target }).catch(() => null);
+  console.log(`[Media] voice note heard as "${lang}" (${sure.toFixed(2)}), transcribed again by Whisper as "${target}"`);
   return clean(again) || clean(first);
 }
 
