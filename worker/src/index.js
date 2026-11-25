@@ -737,6 +737,8 @@ app.post('/api/leads/:tid/upload', tenantAccess(), async (c) => {
     name: t.broadcastName || c.env.DEFAULT_BROADCAST_TEMPLATE,
     language: t.broadcastLanguage || c.env.DEFAULT_BROADCAST_LANGUAGE || 'en',
     hasParams: t.broadcastName ? t.broadcastHasParams !== false : true,
+    // Telugu version for Telugu customers: only when the business turns it on (after Meta approves it).
+    telugu: t.broadcastTelugu === true,
   };
   await c.env.HUB.get(c.env.HUB.idFromName(tid)).startBroadcast(tid, toSend, template);
   summary.enqueued = toSend.length;

@@ -165,9 +165,10 @@ export class BusinessHub extends DurableObject {
     const tpl = JSON.parse(row.template);
     const business = tenant.profile?.displayName || tenant.businessName;
     const params = tpl.hasParams ? [row.name || 'there', business] : [];
-    // Telugu customers: the template's Telugu version ("te") if Meta has approved it, else the usual language.
+    // Telugu customers: the template's Telugu version ("te") — only when switched on (templates.broadcastTelugu),
+    // i.e. after Meta approves it; otherwise everyone gets the approved template in the usual language.
     const send = async () => {
-      if (lead?.language === 'te' && tpl.language !== 'te') {
+      if (tpl.telugu && lead?.language === 'te' && tpl.language !== 'te') {
         try { return await client.template(row.phone, tpl.name, params, 'te'); }
         catch (err) { if (!(err.code === 132001 || /does not exist/i.test(err.text || ''))) throw err; }
       }
