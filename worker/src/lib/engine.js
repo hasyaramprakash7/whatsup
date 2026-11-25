@@ -891,14 +891,16 @@ export class Conversation {
     const to = this.tenant.adminNotificationPhone;
     let messageId = null; let error = null;
     let res = null;
-    if (tpl.adminAlertName) {
-      try {
-        res = await this.admin.template(to, tpl.adminAlertName, [headline, this.lead?.name || 'Customer', `+${this.phone}`, details].map((v) => String(v || '-').replace(/\s+/g, ' ').trim() || '-'), tpl.adminAlertLanguage || 'en');
-      } catch (err) {
-        // Not approved yet / wrong name or language: fall back to a normal message (works while the team
-        // number has messaged the business number in the last 24 hours).
-        error = `Template "${tpl.adminAlertName}": ${err.text || err.message}`;
-        console.warn('[Flow] team alert template failed, sending as a normal message:', error);
+    // Templates in order of preference (e.g. "team_booking_alert,team_lead_alert": a new one still waiting for
+    // Meta's approval falls back to the approved one), then a normal message.
+    const names = String(tpl.adminAlertName || '').split(',').map((x) => x.trim()).filter(Boolean);
+    const params = [headline, this.lead?.name || 'Customer', `+${this.phone}`, details].map((v) => String(v || '-').replace(/\s+/g, ' ').trim() || '-');
+    for (const name of names) {
+      try { res = await this.admin.template(to, name, params, tpl.adminAlertLanguage || 'en'); error = null; break; } catch (err) {
+        // Not approved yet / wrong name or language: try the next one, finally a normal message (works while the
+        // team number has messaged the business number in the last 24 hours).
+        error = `Template "${name}": ${err.text || err.message}`;
+        console.warn('[Flow] team alert template failed:', error);
       }
     }
     if (!res) {

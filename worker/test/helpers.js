@@ -33,18 +33,20 @@ export async function setup() {
   const { Conversation } = await import(lib('engine.js'));
 
   /** A new customer (optionally with a known language). */
-  function newChat({ language = null, phone = '919111111111' } = {}) {
+  function newChat({ language = null, phone = '919111111111', refuse = ['team_lead_alert'], templates = null } = {}) {
     store.lead = { name: '', status: 'NEW', data: {}, language };
     const sent = [];
+    // The fake WhatsApp refuses the template names in `refuse` (like Meta does for unapproved ones).
     const client = (who, failTemplate = false) => new Proxy({}, { get: (_, kind) => async (to, ...args) => {
-      if (kind === 'template' && failTemplate) { const e = new Error('template'); e.text = '132001: template name (team_lead_alert) does not exist in en'; throw e; }
+      if (kind === 'template' && failTemplate && refuse.includes(args[0])) { const e = new Error('template'); e.code = 132001; e.text = `132001: template name (${args[0]}) does not exist in en`; throw e; }
       sent.push({ who, kind, args });
       return { messages: [{ id: `wamid.test${sent.length}` }] };
     } });
     let state;
     const send = async (message) => {
       const from = sent.length;
-      const c = new Conversation({ env: {}, tenant: structuredClone(TENANT), lead: store.lead, state, phone,
+      const tenant = structuredClone(TENANT); if (templates) tenant.templates = { ...tenant.templates, ...templates };
+      const c = new Conversation({ env: {}, tenant, lead: store.lead, state, phone,
         bot: client('bot'), ai: client('ai'), admin: client('admin', true) });
       state = await c.handle(message);
       return sent.slice(from).map(view);

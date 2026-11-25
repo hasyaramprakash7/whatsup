@@ -165,8 +165,16 @@ export class BusinessHub extends DurableObject {
     const tpl = JSON.parse(row.template);
     const business = tenant.profile?.displayName || tenant.businessName;
     const params = tpl.hasParams ? [row.name || 'there', business] : [];
+    // Telugu customers: the template's Telugu version ("te") if Meta has approved it, else the usual language.
+    const send = async () => {
+      if (lead?.language === 'te' && tpl.language !== 'te') {
+        try { return await client.template(row.phone, tpl.name, params, 'te'); }
+        catch (err) { if (!(err.code === 132001 || /does not exist/i.test(err.text || ''))) throw err; }
+      }
+      return client.template(row.phone, tpl.name, params, tpl.language);
+    };
     try {
-      const res = await client.template(row.phone, tpl.name, params, tpl.language);
+      const res = await send();
       const leads = await updateLeads(this.env, tenant._id, 'phone = ?', [row.phone], {
         lastBroadcastMessageId: res?.messages?.[0]?.id || null, broadcastStatus: 'SENT', broadcastStatusAt: new Date().toISOString(), broadcastError: null,
         botPaused: false, // the bot answers again even if this chat was handed to the team before

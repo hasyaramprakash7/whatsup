@@ -353,6 +353,7 @@ app.get('/api/tenants/:tid', tenantAccess(), async (c) => {
 });
 
 const TEMPLATE_NAME_RE = /^[a-z0-9_]{1,512}$/;
+const ALERT_NAMES_RE = /^[a-z0-9_]{1,100}(,[a-z0-9_]{1,100}){0,3}$/; // team alert: up to 4 names, tried in order
 const LANGUAGE_RE = /^[a-z]{2,3}(_[A-Z]{2})?$/;
 
 /** Telugu for the flow's texts (free Workers AI). Body: { flow } (the builder's draft) — returns { te, skipped } to review, not saved. */
@@ -392,7 +393,7 @@ app.patch('/api/tenants/:tid', tenantAccess(), async (c) => {
   if (b.ai !== undefined) { const { value, errors: e } = validateAi(b.ai); errors.push(...e); patch.ai = value; }
   if (b.templates !== undefined) {
     const t = { ...current.templates };
-    for (const [k, re, label] of [['broadcastName', TEMPLATE_NAME_RE, 'Broadcast template name'], ['adminAlertName', TEMPLATE_NAME_RE, 'Alert template name'],
+    for (const [k, re, label] of [['broadcastName', TEMPLATE_NAME_RE, 'Broadcast template name'], ['adminAlertName', ALERT_NAMES_RE, 'Alert template name'],
       ['broadcastLanguage', LANGUAGE_RE, 'Broadcast language'], ['adminAlertLanguage', LANGUAGE_RE, 'Alert language']]) {
       if (b.templates[k] === undefined) continue;
       const v = String(b.templates[k] ?? '').trim();

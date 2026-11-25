@@ -239,3 +239,16 @@ test('greeting mid-flow repeats the full question; after a long pause it starts 
   const fresh = await c.text('hi');
   assert.match(fresh[0].text, /Which area/);
 });
+
+test('team alert: a template still waiting for Meta falls back to the approved one, then to a normal message', async () => {
+  const c = newChat({ language: 'en', templates: { adminAlertName: 'team_booking_alert,team_lead_alert' }, refuse: ['team_booking_alert'] });
+  await c.text('hi'); await toTimeStep(c); await c.choose('Tomorrow');
+  const sentAlert = c.sent.filter((m) => m.who === 'admin');
+  assert.equal(sentAlert.length, 1);
+  assert.equal(sentAlert[0].kind, 'template');
+  assert.equal(sentAlert[0].args[0], 'team_lead_alert');
+  assert.equal(c.lead.adminAlertStatus, 'SENT');
+  const d = newChat({ language: 'en', templates: { adminAlertName: 'team_booking_alert,team_lead_alert' }, refuse: [] });
+  await d.text('hi'); await toTimeStep(d); await d.choose('Tomorrow');
+  assert.equal(d.sent.find((m) => m.who === 'admin').args[0], 'team_booking_alert', 'once approved, the Utility one is used');
+});
