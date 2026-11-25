@@ -70,6 +70,7 @@ export function describeInbound(message) {
   if (saved?.tooLarge) meta.tooLarge = true;
   // A voice note's text is its transcript, so the Inbox, the AI and the lead history can read it.
   if (saved?.transcript) return { type: t, text: saved.transcript, meta: { ...meta, transcript: true } };
+  if (saved?.unclear) return { type: t, text: '', meta: { ...meta, note: 'Not clear enough to write down — the customer was asked to type it or send it again.' } };
   return { type: t, text: media.caption || '', meta };
 }
 

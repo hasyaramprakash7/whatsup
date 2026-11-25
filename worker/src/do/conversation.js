@@ -66,7 +66,7 @@ export class ConversationDO extends DurableObject {
     let msg = message;
     if (!exists && MEDIA_TYPES.includes(message.type)) {
       // Photos, voice notes, videos and documents are copied to R2 so the Inbox can show and play them.
-      const saved = await saveInboundMedia(this.env, { tenantId, accessToken: await tenantAccessToken(this.env, tenant), message, voiceLanguage: tenant.ai?.voiceLanguage || 'te' });
+      const saved = await saveInboundMedia(this.env, { tenantId, accessToken: await tenantAccessToken(this.env, tenant), message, voiceLanguage: tenant.ai?.voiceLanguage || 'te', context: `${tenant.profile?.displayName || tenant.businessName} (${String(tenant.industry || 'business').replace(/_/g, ' ')})` });
       if (saved) msg = { ...message, _media: saved };
     }
     const lead = exists ? await getLead(this.env, tenantId, from) : (await recordInbound(this.env, tenantId, from, msg, profileName)).lead;
@@ -89,7 +89,8 @@ export class ConversationDO extends DurableObject {
     });
     // A transcribed voice note is answered exactly like the same words typed.
     const transcript = message._media?.transcript;
-    const state = await convo.handle(transcript ? { ...message, type: 'text', text: { body: transcript }, voice: true } : message);
+    const state = await convo.handle(transcript ? { ...message, type: 'text', text: { body: transcript }, voice: true }
+      : message._media?.unclear ? { ...message, voice: true, unclear: true } : message);
     await this.ctx.storage.put('state', state);
   }
 }

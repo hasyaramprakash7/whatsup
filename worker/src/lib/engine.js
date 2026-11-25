@@ -198,6 +198,16 @@ export class Conversation {
       return this.touch();
     }
 
+    // A voice note too unclear to write down: ask to type it or say it again — never guess, never hand over for it.
+    if (message.unclear) {
+      const again = Date.now() - (this.state.unclearAt || 0) < 10 * 60 * 1000;
+      this.state.unclearAt = Date.now();
+      await this.bot.text(this.phone, again
+        ? "Sorry, I still couldn't hear that clearly 🙏 Please type your message — I'll reply right away."
+        : "Sorry, I couldn't hear that voice note clearly 🙏 Could you please type it, or send it again speaking a little slowly?").catch(() => {});
+      return this.touch();
+    }
+
     // A message Meta can't share (poll, view-once, edited…): it isn't a wrong answer, so it never counts
     // towards handing the chat to the team. Ask them to resend (at most once per 10 minutes, each message costs).
     // A brand-new chat still gets the welcome below, like a "Hi".
