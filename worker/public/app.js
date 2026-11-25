@@ -968,6 +968,7 @@
     clients: { title: 'Businesses', icon: 'key', render: renderClients, admin: true },
     activity: { title: 'Activity log', icon: 'activity', render: renderActivity },
     team: { title: 'Team & security', icon: 'shield', render: renderTeam },
+    metasetup: { title: 'Create your own Meta account', icon: 'sparkle', render: renderMetaSetup },
   };
   function renderNav() {
     const link = (p, extra = '') => `<a href="#/${p}" data-page="${p}" title="${esc(PAGES[p].title)}">${icon(PAGES[p].icon)}<span>${PAGES[p].title}</span>${extra}</a>`;
@@ -977,7 +978,8 @@
       <div class="nav-label">Configure</div>
       ${link('flow')}${link('catalog')}${link('ai')}${link('profile')}${link('settings')}${link('team')}
       ${isAdmin() ? `<div class="nav-label">Admin</div>${link('clients')}` : ''}
-      ${link('activity')}`;
+      ${link('activity')}
+      ${state.auth?.memberRole === 'agent' ? '' : link('metasetup')}`;
     $$('#nav a').forEach((a) => a.addEventListener('click', () => $('#shell').classList.remove('nav-open')));
     // Phone: app-style tab bar. "More" opens the full menu as a drawer.
     const tab = (p, label, extra = '') => `<a href="#/${p}" data-page="${p}">${icon(PAGES[p].icon)}<span>${label}</span>${extra}</a>`;
@@ -1884,7 +1886,7 @@
     const bn = [];
     if (est.paymentProblem) bn.push(`<div class="banner red">${icon('alert')}<div><strong>Meta refused messages because of a payment problem.</strong> Campaigns are paused. Add funds or fix the card in Meta Billing, then tap Resume on the campaign. <a href="${esc(d.billingUrl)}" target="_blank" rel="noopener">Open Meta Billing →</a></div></div>`);
     const B = d.balance;
-    if (B && B.level !== 'ok' && !est.paymentProblem) bn.push(`<div class="banner ${B.level === 'empty' ? 'red' : 'amber'}">${icon('wallet')}<div><strong>${B.level === 'empty' ? 'Your Meta balance is probably used up' : 'Your Meta balance is running low'}</strong> — about ${esc(money(Math.max(B.left, 0), cur))} left${B.needed > B.left ? `, but waiting campaign messages need about ${esc(money(B.needed, cur))}` : ''}. <a href="${esc(d.billingUrl)}" target="_blank" rel="noopener">Add funds in Meta Billing →</a></div></div>`);
+    if (B && (B.empty || B.short) && !est.paymentProblem) bn.push(`<div class="banner ${B.empty ? 'red' : 'amber'}">${icon('wallet')}<div><strong>${B.empty ? 'Your Meta balance is ₹0' : 'Your Meta balance may not cover the waiting messages'}</strong> — Meta showed ${esc(money(B.amount, cur))} ${esc(relTime(B.seenAt))}${B.short ? `; the waiting campaign messages need about ${esc(money(B.needed, cur))}` : ''}. <a href="${esc(d.billingUrl)}" target="_blank" rel="noopener">Add funds in Meta Billing →</a></div></div>`);
     if (d.demo) bn.push(`<div class="banner blue">${icon('info')}<div>This is the test copy: the numbers below are <strong>samples</strong>. The live app shows your real Meta figures.</div></div>`);
     if (d.error) bn.push(`<div class="banner amber">${icon('alert')}<div><strong>Meta's pricing report is not available right now:</strong> ${esc(d.error)} The estimate from your campaigns is still shown.</div></div>`);
     $('#sp-banners').innerHTML = bn.length ? `<div class="stack" style="gap:10px;margin-bottom:16px">${bn.join('')}</div>` : '';
@@ -1910,18 +1912,18 @@
     }).join('')}</tbody></table>` : '<p class="muted">No numbers found on this account.</p>';
     // balance & top up
     const L = d.limit || {};
-    const lvl = B ? ({ ok: ['d-READ', 'Enough'], low: ['d-QUEUED', 'Running low'], empty: ['d-FAILED', 'Used up'] })[B.level] : null;
+    const seen = B?.seenAt ? new Date(B.seenAt).toLocaleString('en-IN', { day: 'numeric', month: 'short', hour: 'numeric', minute: '2-digit' }) : '';
     $('#sp-pay').innerHTML = `
       ${B ? `<div class="stack" style="gap:6px">
-          <div class="row" style="gap:10px;align-items:baseline"><span class="muted small">Balance left (estimate)</span><span class="pill ${lvl[0]}">${lvl[1]}</span></div>
-          <div style="font-size:30px;font-weight:700;line-height:1.1">${esc(money(Math.max(B.left, 0), cur))}</div>
-          <p class="hint" style="margin:0">${esc(money(B.typed, cur))} you typed ${esc(relTime(B.typedAt))} − ${esc(money(B.spentSince, cur))} messages since − ${esc(money(B.used - B.spentSince, cur))} GST (18%)${B.exact ? '' : ' · Meta’s report was not available, so new charges may be missing'}.
-            ${B.marketingLeft != null ? `Enough for about <strong>${B.marketingLeft.toLocaleString('en-IN')}</strong> more marketing messages.` : ''}</p>
-        </div>` : `<div class="banner blue">${icon('info')}<div><strong>See your balance here.</strong> Open Meta Billing, copy <em>Available funds</em> (e.g. ₹89.81) and type it below. The app then counts it down as messages are charged.</div></div>`}
+          <span class="muted small">Meta balance (Available funds)</span>
+          <div style="font-size:30px;font-weight:700;line-height:1.1">${esc(money(B.amount, cur))}</div>
+          <p class="hint" style="margin:0">Exactly as shown in Meta Billing on <strong>${esc(seen)}</strong>. Meta takes money as messages are sent, so open Meta Billing for today's figure and update it here.</p>
+          <div class="row wrap" style="gap:6px"><a class="btn sm" href="${esc(d.billingUrl)}" target="_blank" rel="noopener">${icon('external', 'sm')}See today's balance in Meta</a><a class="btn sm" href="#/metasetup" data-helper-balance>${icon('sparkle', 'sm')}Let the AI helper read it</a></div>
+        </div>` : `<div class="banner blue">${icon('info')}<div><strong>Show your Meta balance here.</strong> Open Meta Billing, copy <em>Available funds</em> (e.g. ₹89.81) and type it below — or <a href="#/metasetup" data-helper-balance>let the AI helper read it from Meta</a>.</div></div>`}
       <form class="row wrap" id="sp-bal-form" style="gap:8px;align-items:flex-end">
         <label class="field" style="margin:0"><span>Available funds in Meta (₹)</span><input class="input" type="number" step="0.01" min="0" name="amount" placeholder="e.g. 89.81" style="width:150px" /></label>
         <button class="btn sm primary" type="submit">${B ? 'Update balance' : 'Save balance'}</button><span id="sp-bal-msg" class="small"></span></form>
-      <p class="hint" style="margin-top:-4px">Type it again after each top-up. Meta takes money about once a day, so small differences are normal.</p>
+      <p class="hint" style="margin-top:-4px">Copy it again from Meta after each top-up or big campaign.</p>
       <dl class="kv"><dt>Meta account</dt><dd>${esc(d.accountName || '—')}</dd>
         <dt>Currency</dt><dd>${esc(cur)}</dd>
         <dt>Payment method</dt><dd>${d.fundingLinked === true ? '<span class="pill d-READ">Linked</span>' : d.fundingLinked === false ? '<span class="pill d-FAILED">Not added</span>' : '<span class="muted">See Meta Billing</span>'}</dd>
@@ -1938,7 +1940,7 @@
       const f = e.currentTarget; const msg = $('#sp-bal-msg');
       if (f.amount.value === '') { msg.textContent = 'Type the amount first.'; return; }
       msg.textContent = 'Saving…'; msg.className = 'small muted';
-      try { await api('PUT', `/tenants/${state.tenantId}/balance`, { amount: Number(f.amount.value) }); toast('Balance saved', 'The app now counts it down as messages are charged.'); await loadSpending(true); }
+      try { await api('PUT', `/tenants/${state.tenantId}/balance`, { amount: Number(f.amount.value) }); toast('Balance saved', 'Shown exactly as you copied it from Meta.'); await loadSpending(true); }
       catch (err) { msg.textContent = err.message; msg.className = 'small'; msg.style.color = 'var(--danger)'; }
     });
   }
@@ -3185,6 +3187,323 @@
     const c = $('#console'); c.scrollTop = c.scrollHeight;
     $('#clear-logs').addEventListener('click', () => { store.set(LOG_KEY, null); renderActivity(); });
     hydrateIcons($('#page'));
+  }
+
+  // ============================================================
+  // Create your own Meta account: AI helper (works in the person's Chrome through the helper extension),
+  // the written steps with screenshots, and the form that connects the account to this dashboard.
+  // ============================================================
+  const ext = { version: null, waiters: new Map(), seq: 0 };
+  window.addEventListener('message', (e) => {
+    if (e.source !== window || !e.data) return;
+    if (e.data.bx === 'hello') { ext.version = e.data.version; if (state.route.page === 'metasetup') drawExtStatus(); }
+    if (e.data.bx === 'res') { const w = ext.waiters.get(e.data.id); if (w) { ext.waiters.delete(e.data.id); w(e.data.res || { ok: false, error: 'No answer' }); } }
+  });
+  /** Ask the helper extension to do something (open / observe / act / show). */
+  function extCall(msg, timeout = 45000) {
+    return new Promise((resolve) => {
+      const id = ++ext.seq;
+      const t = setTimeout(() => { ext.waiters.delete(id); resolve({ ok: false, error: 'The helper extension did not answer.' }); }, timeout);
+      ext.waiters.set(id, (res) => { clearTimeout(t); resolve(res); });
+      window.postMessage({ bx: 'req', id, msg }, location.origin);
+    });
+  }
+  const askExtension = () => window.postMessage({ bx: 'who' }, location.origin);
+
+  const HELPER_TASKS = [
+    ['setup', 'Create my Meta app + WhatsApp number', 'Makes the Meta app, connects your business, adds your number'],
+    ['ids', 'Find my WhatsApp IDs', 'WhatsApp Business Account ID + Phone number ID'],
+    ['token', 'Create my permanent access key', 'System user token that never expires'],
+    ['balance', 'Read my Meta balance', 'Available funds from Meta Billing'],
+  ];
+  const GUIDE = [
+    { title: 'Before you start', link: null, shot: null, body: [
+      'A Facebook account you can log in to (the owner of the business).',
+      'A phone number for WhatsApp that is <strong>not</strong> on the WhatsApp app right now (or delete it from the app first). It must receive an SMS or call for the code.',
+      'Your business email, and UPI or a card for message payments.',
+      'About 20 minutes. You can stop and continue later.'] },
+    { title: 'Open Meta for Developers → Create App', link: 'https://developers.facebook.com/apps/', shot: '02-apps.jpg', body: [
+      'Log in with your Facebook account. If Meta asks you to <strong>register as a developer</strong>, accept and verify your phone.',
+      'Click the green <strong>Create App</strong> button (top right).'] },
+    { title: 'App details', link: null, shot: '03-app-details.jpg', body: [
+      '<strong>App name:</strong> your business + "WhatsApp", e.g. <em>Sri Homes WhatsApp</em> (max 30 letters, no "WhatsApp" alone).',
+      '<strong>App contact email:</strong> your business email (already filled). Click <strong>Next</strong>.'] },
+    { title: 'Use case: WhatsApp', link: null, shot: '04-use-case.jpg', body: [
+      'Tick <strong>Connect with customers through WhatsApp</strong>. Click <strong>Next</strong>.'] },
+    { title: 'Business portfolio', link: null, shot: '05-business.jpg', body: [
+      'Pick your business portfolio if you have one.',
+      'No portfolio? Click <strong>Create a business portfolio</strong> (next picture).'] },
+    { title: 'Create a business portfolio (only if you have none)', link: null, shot: '01-portfolio.jpg', body: [
+      '<strong>Business portfolio name:</strong> your business name exactly as customers know it (no special characters).',
+      '<strong>First name / Surname:</strong> the owner\'s name. <strong>Business email:</strong> your business email.',
+      'Click <strong>Create portfolio</strong>, pick it, then <strong>Next</strong> → <strong>Next</strong> → <strong>Go to dashboard</strong>.'] },
+    { title: 'Production setup: add your number and payment', link: 'https://developers.facebook.com/apps/', shot: '06-production.jpg', body: [
+      'In your app: <strong>Use cases</strong> → <strong>Customize</strong> next to "Connect on WhatsApp" → <strong>Step 2. Production setup</strong>.',
+      '<strong>Register your WhatsApp phone number</strong> → <strong>Add new number</strong>: display name (your business name), category, and the phone number. Type the code Meta sends.',
+      '<strong>Add payment to send business-initiated messages</strong>: add UPI or a card.'] },
+    { title: 'Copy your two IDs', link: null, shot: '07-ids.jpg', body: [
+      'Still in Production setup, open <strong>Register your WhatsApp phone number</strong>.',
+      '<strong>Messaging Account ID</strong> = your <em>WhatsApp Business Account ID</em>. <strong>Phone Number ID</strong> is under your number. Copy both into the form below.'] },
+    { title: 'Messages to this dashboard (webhook)', link: 'https://developers.facebook.com/apps/', shot: null, body: [
+      'In Production setup open <strong>Configure Webhooks</strong> (or the left menu WhatsApp → Configuration).',
+      '<strong>Callback URL:</strong> <code id="ms-cb">…</code>  <strong>Verify token:</strong> <code id="ms-vt">…</code> → <strong>Verify and save</strong>.',
+      'Under <strong>Webhook fields</strong>, turn on <strong>messages</strong>.'] },
+    { title: 'App secret', link: 'https://developers.facebook.com/apps/', shot: null, body: [
+      'In your app: <strong>App settings</strong> → <strong>Basic</strong> → <strong>App secret</strong> → <strong>Show</strong> (Meta asks your Facebook password).',
+      'Copy the 32 letters/digits into the form below. The dashboard needs it to trust messages from your app.'] },
+    { title: 'System user (for the permanent key)', link: 'https://business.facebook.com/latest/settings/system_users', shot: '08-system-users.jpg', body: [
+      '<strong>Business settings → Users → System users</strong> → <strong>Add</strong>: name <em>Bluxury WhatsApp bot</em>, role <strong>Admin</strong>.',
+      'Select it → <strong>Assign assets</strong>: your app (Full control) and your WhatsApp account (Full control) → Save.',
+      'Click <strong>Generate token</strong>.'] },
+    { title: 'Generate token: app', link: null, shot: '09-token-app.jpg', body: ['<strong>Select app:</strong> your WhatsApp app → <strong>Next</strong>.'] },
+    { title: 'Generate token: never expires', link: null, shot: '10-token-never.jpg', body: ['<strong>Token expiry:</strong> choose <strong>Never</strong> → <strong>Next</strong>.'] },
+    { title: 'Generate token: permissions', link: null, shot: '11-token-perms.jpg', body: [
+      'Type <em>whatsapp</em> in the search and tick <strong>whatsapp_business_messaging</strong> and <strong>whatsapp_business_management</strong>.',
+      'Click <strong>Generate token</strong>. <strong>Copy the token now</strong> (starts with "EA…"); Meta shows it only once. Paste it in the form below.'] },
+    { title: 'Add money for messages', link: 'https://business.facebook.com/billing_hub/accounts', shot: '12-billing.jpg', body: [
+      'Meta Billing → your account → <strong>Add funds</strong> (UPI works). <strong>Available funds</strong> is your balance; marketing messages cost about ₹0.86 + GST each.'] },
+    { title: 'Check: number connected, templates', link: 'https://business.facebook.com/latest/whatsapp_manager/phone_numbers', shot: '14-phone-numbers.jpg', body: [
+      'WhatsApp Manager → <strong>Phone numbers</strong>: your number shows <strong>Connected</strong>.',
+      'Message templates (for broadcasts) are created in WhatsApp Manager → <strong>Manage templates</strong> → <strong>Create Template</strong> and need Meta\'s approval.'] },
+  ];
+
+  const ms = { tab: 'helper', run: null, collected: {}, secrets: { token: '', secret: '' } };
+  document.addEventListener('click', (e) => { if (e.target.closest('[data-helper-balance]')) ms.tab = 'helper'; });
+  function renderMetaSetup() {
+    $('#page').innerHTML = `<div class="page-inner">
+      <div class="page-head"><div><h1>Create your own Meta account</h1><p>Your own WhatsApp account at Meta, paid by you, connected to this dashboard. Let the AI helper do it in your Chrome, or follow the steps yourself.</p></div></div>
+      <div class="tabs" id="ms-tabs" style="margin-bottom:16px">${[['helper', 'AI helper'], ['guide', 'Step-by-step guide'], ['connect', 'Connect to dashboard'], ...(isAdmin() ? [['requests', 'Requests']] : [])]
+        .map(([k, l]) => `<button data-t="${k}" class="${ms.tab === k ? 'active' : ''}">${l}</button>`).join('')}</div>
+      <div id="ms-body"></div></div>`;
+    $('#ms-tabs').addEventListener('click', (e) => { const b = e.target.closest('button[data-t]'); if (!b) return; ms.tab = b.dataset.t; renderMetaSetup(); hydrateIcons($('#page')); });
+    ({ helper: drawHelper, guide: drawGuide, connect: drawConnect, requests: drawRequests })[ms.tab]();
+  }
+
+  // ---------- AI helper ----------
+  function drawHelper() {
+    $('#ms-body').innerHTML = `<div class="overview-grid">
+      <div class="stack">
+        <div class="card"><div class="card-head"><span class="section-icon indigo">${icon('sparkle')}</span><div><h2>AI helper</h2><p>Opens Meta in a window next to this one and does each step. When only you can do something (log in, code, payment) it asks you here.</p></div></div>
+          <div class="card-body stack">
+            <div id="ms-ext"></div>
+            <div class="stack" style="gap:8px" id="ms-tasks">${HELPER_TASKS.map(([k, t, d]) => `<button class="btn" data-task="${k}" style="justify-content:flex-start;text-align:left;height:auto;padding:10px 12px"><span><strong>${t}</strong><br><span class="muted small">${d}</span></span></button>`).join('')}</div>
+            <label class="field" style="margin:0"><span>Business name (for Meta)</span><input class="input" id="ms-biz" value="${esc(ms.collected.businessName || state.tenant?.businessName || '')}" /></label>
+          </div></div>
+        <div class="card"><div class="card-head"><span class="section-icon">${icon('key')}</span><div><h2>Found so far</h2><p>Saved by the helper; also filled in the Connect form</p></div></div><div class="card-body" id="ms-found"></div></div>
+      </div>
+      <div class="card" style="display:flex;flex-direction:column;min-height:520px"><div class="card-head"><span class="section-icon blue">${icon('chat')}</span><div><h2>Chat</h2><p id="ms-status">Pick a task to start</p></div><span class="spacer"></span><button class="btn sm" id="ms-show" hidden>${icon('external', 'sm')}Show Meta window</button><button class="btn sm" id="ms-stop" hidden>Stop</button></div>
+        <div class="card-body" id="ms-chat" style="flex:1;overflow:auto;display:flex;flex-direction:column;gap:8px;max-height:60vh"></div>
+        <form id="ms-reply" class="row" style="gap:8px;padding:12px;border-top:1px solid var(--line)"><input class="input" id="ms-reply-text" placeholder="Answer the helper, or type “done” after you did a step" autocomplete="off" />
+          <button class="btn primary" type="submit">${icon('send')}</button></form>
+        <div class="row wrap" id="ms-quick" style="gap:6px;padding:0 12px 12px">${['Done', 'Yes', 'No', 'Skip this'].map((q) => `<button type="button" class="btn sm ghost" data-q="${q}">${q}</button>`).join('')}</div>
+      </div></div>`;
+    hydrateIcons($('#ms-body'));
+    drawExtStatus(); drawFound(); drawChat();
+    askExtension();
+    $('#ms-tasks').addEventListener('click', (e) => { const b = e.target.closest('button[data-task]'); if (b) startHelper(b.dataset.task); });
+    $('#ms-biz').addEventListener('input', (e) => { ms.collected.businessName = e.target.value; });
+    $('#ms-reply').addEventListener('submit', (e) => { e.preventDefault(); const v = $('#ms-reply-text').value.trim(); if (v) { $('#ms-reply-text').value = ''; userReply(v); } });
+    $('#ms-quick').addEventListener('click', (e) => { const b = e.target.closest('[data-q]'); if (b) userReply(b.dataset.q); });
+    $('#ms-stop').addEventListener('click', () => stopHelper('Stopped. Pick a task to start again.'));
+    $('#ms-show').addEventListener('click', () => extCall({ cmd: 'show' }));
+    syncRunButtons();
+  }
+  function drawExtStatus() {
+    const el = $('#ms-ext'); if (!el) return;
+    el.innerHTML = ext.version
+      ? `<div class="banner green">${icon('check')}<div><strong>Helper extension connected</strong> (v${esc(ext.version)}). The helper can open and fill Meta pages in this Chrome.</div></div>`
+      : `<div class="banner amber">${icon('download')}<div><strong>Install the Bluxury Meta Helper (one time, 1 minute)</strong>
+          <ol style="margin:6px 0 0 18px;padding:0"><li><a href="/bluxury-meta-helper.zip" download>Download the helper</a> and unzip it (right-click → Extract all).</li>
+          <li>Open <code>chrome://extensions</code> in a new tab (copy-paste it in the address bar).</li>
+          <li>Turn on <strong>Developer mode</strong> (top right).</li>
+          <li>Click <strong>Load unpacked</strong> and choose the unzipped <em>bluxury-meta-helper</em> folder.</li>
+          <li>Come back here and reload this page.</li></ol>
+          <p class="small muted" style="margin:6px 0 0">It only works on facebook.com / meta.com pages and this dashboard. It never types passwords, codes or card details.</p></div></div>`;
+    hydrateIcons(el);
+  }
+  function drawFound() {
+    const el = $('#ms-found'); if (!el) return;
+    const c = ms.collected;
+    const row = (k, v) => `<dt>${k}</dt><dd>${v}</dd>`;
+    el.innerHTML = `<dl class="kv">${row('WhatsApp Business Account ID', c.wabaId ? `<code>${esc(c.wabaId)}</code>` : '<span class="muted">—</span>')}
+      ${row('Phone number ID', c.phoneNumberId ? `<code>${esc(c.phoneNumberId)}</code>` : '<span class="muted">—</span>')}
+      ${row('Access key', ms.secrets.token ? '<span class="pill d-READ">Saved (hidden)</span>' : '<span class="muted">—</span>')}
+      ${row('App secret', ms.secrets.secret ? '<span class="pill d-READ">Saved (hidden)</span>' : '<span class="muted">—</span>')}
+      ${row('Meta balance', c.balance != null ? esc(money(c.balance)) : '<span class="muted">—</span>')}</dl>
+      ${c.wabaId || c.phoneNumberId || ms.secrets.token ? '<button class="btn sm primary" id="ms-to-connect" style="margin-top:10px">Use these in the Connect form →</button>' : ''}`;
+    $('#ms-to-connect')?.addEventListener('click', () => { ms.tab = 'connect'; renderMetaSetup(); hydrateIcons($('#page')); });
+  }
+  function drawChat() {
+    const el = $('#ms-chat'); if (!el) return;
+    const log = ms.run?.log || ms.lastLog || [];
+    el.innerHTML = log.length ? log.map((m) => `<div class="msg ${m.who === 'me' ? 'out' : 'in'}" style="display:flex;${m.who === 'me' ? 'justify-content:flex-end' : ''}"><div class="bubble" style="max-width:85%">${m.who === 'step' ? `<span class="muted small">${esc(m.text)}</span>` : esc(m.text)}</div></div>`).join('')
+      : '<div class="empty"><p>The helper explains every step here.</p></div>';
+    el.scrollTop = el.scrollHeight;
+  }
+  const say = (who, text) => { const r = ms.run; if (!r) return; r.log.push({ who, text }); if (r.log.length > 300) r.log.splice(0, 50); drawChat(); };
+  const setStatus = (t) => { const el = $('#ms-status'); if (el) el.textContent = t; };
+  function syncRunButtons() {
+    const on = !!ms.run?.active;
+    $('#ms-stop')?.toggleAttribute('hidden', !on); $('#ms-show')?.toggleAttribute('hidden', !on);
+    $$('#ms-tasks button').forEach((b) => { b.disabled = on; });
+  }
+  function stopHelper(text) {
+    const r = ms.run; if (!r) return;
+    r.active = false; if (r.waiting) { r.waiting(null); r.waiting = null; }
+    if (text) say('ai', text);
+    ms.lastLog = r.log; setStatus('Stopped'); syncRunButtons();
+  }
+  function userReply(text) {
+    const r = ms.run;
+    if (!r?.active) { toast('Pick a task first', 'Then the helper starts working.'); return; }
+    say('me', text);
+    if (r.waiting) { const w = r.waiting; r.waiting = null; w(text); } else r.pendingReply = text;
+  }
+  const waitForPerson = () => new Promise((resolve) => { ms.run.waiting = resolve; setStatus('Waiting for you…'); });
+
+  async function startHelper(task) {
+    if (!ext.version) { askExtension(); await new Promise((r) => setTimeout(r, 400)); }
+    if (!ext.version) { toast('Install the helper first', 'Follow the 5 short steps on this page.', { kind: 'error' }); return; }
+    const title = HELPER_TASKS.find((t) => t[0] === task)[1];
+    ms.run = { task, active: true, history: [], log: [], pendingReply: '', waiting: null, steps: 0, lastKey: '', repeats: 0 };
+    syncRunButtons();
+    say('ai', `OK, let's do this: ${title}. I'll open Meta in a window next to this one. Watch it — and answer me here when I ask.`);
+    const facts = () => ({ businessName: ($('#ms-biz')?.value || ms.collected.businessName || '').trim() });
+    let observation = null;
+    const layout = { left: Math.round(screen.availWidth / 2), top: 0, width: Math.round(screen.availWidth / 2), height: screen.availHeight };
+    while (ms.run?.active && ms.run.task === task) {
+      const r = ms.run;
+      if (++r.steps > 90) { stopHelper('That took many steps, so I stopped to be safe. Tell me where you are, or pick the task again to continue.'); break; }
+      setStatus(`Working… step ${r.steps}`);
+      // what is on the Meta page now
+      const seen = await extCall({ cmd: 'observe' });
+      observation = seen.ok ? seen.observation : null;
+      if (observation) {
+        if (observation._tokens?.length) ms.pageToken = observation._tokens[observation._tokens.length - 1];
+        if (observation._secrets?.length) ms.pageSecret = observation._secrets[observation._secrets.length - 1];
+        delete observation._tokens; delete observation._secrets;
+      }
+      let res;
+      try { res = await api('POST', `/helper/${state.tenantId}/step`, { task, history: r.history, observation, reply: r.pendingReply, facts: facts() }); }
+      catch (err) { stopHelper(`I can't continue: ${err.message}`); break; }
+      r.pendingReply = '';
+      if (!ms.run?.active) break;
+      const a = res.action;
+      if (res.say) say('ai', res.say);
+      // the same action again and again on an unchanged page: ask the person instead of looping
+      const key = JSON.stringify(a) + (observation?.url || '');
+      r.repeats = key === r.lastKey ? r.repeats + 1 : 0; r.lastKey = key;
+      if (r.repeats >= 2 && a.type !== 'ask') { a.type = 'ask'; a.question = 'I seem to be stuck on this page. Can you click the next button yourself and type "done"?'; }
+      let result = '';
+      if (a.type === 'open') { const o = await extCall({ cmd: 'open', url: a.url, layout }, 60000); result = o.ok ? o.result : `could not open: ${o.error}`; }
+      else if (['click', 'type', 'select', 'scroll'].includes(a.type)) { const o = await extCall({ cmd: 'act', action: a }); result = o.ok ? o.result : `failed: ${o.error}`; say('step', `↳ ${result}`); }
+      else if (a.type === 'wait') { await new Promise((rs) => setTimeout(rs, a.seconds * 1000)); result = 'waited'; }
+      else if (a.type === 'ask') {
+        say('ai', a.question);
+        const answer = await waitForPerson();
+        if (answer == null) break;
+        result = `the person said: ${answer}`;
+      } else if (a.type === 'save') {
+        const f = a.fields; const got = [];
+        if (f.wabaId) { ms.collected.wabaId = f.wabaId; got.push('WhatsApp Business Account ID'); }
+        if (f.phoneNumberId) { ms.collected.phoneNumberId = f.phoneNumberId; got.push('Phone number ID'); }
+        if (f.token && ms.pageToken) { ms.secrets.token = ms.pageToken; got.push('access key'); }
+        if (ms.pageSecret && !ms.secrets.secret) { ms.secrets.secret = ms.pageSecret; got.push('app secret'); }
+        if (f.balance != null) {
+          ms.collected.balance = f.balance; got.push('balance');
+          try { await api('PUT', `/tenants/${state.tenantId}/balance`, { amount: f.balance }); } catch { /* shown in Found */ }
+        }
+        drawFound();
+        result = got.length ? `saved ${got.join(', ')}` : 'nothing new to save (no token on the page yet?)';
+        say('step', `✓ ${result}`);
+      } else if (a.type === 'done') {
+        say('ai', a.summary);
+        stopHelper(ms.collected.wabaId || ms.secrets.token ? 'Your details are in "Found so far". Open the Connect tab to finish.' : '');
+        break;
+      }
+      r.history.push({ action: a, result });
+    }
+    syncRunButtons();
+  }
+
+  // ---------- written guide ----------
+  async function drawGuide() {
+    $('#ms-body').innerHTML = `<div class="stack">${GUIDE.map((g, i) => `
+      <div class="card"><div class="card-head"><span class="section-icon ${i === 0 ? 'amber' : 'indigo'}" style="font-weight:700">${i + 1}</span><div><h2>${g.title}</h2></div><span class="spacer"></span>${g.link ? `<a class="btn sm primary" href="${g.link}" target="_blank" rel="noopener">${icon('external', 'sm')}Open this page</a>` : ''}</div>
+        <div class="card-body stack">${g.body.map((b) => `<p style="margin:0">${b}</p>`).join('')}
+          ${g.shot ? `<a href="/guide/${g.shot}" target="_blank" rel="noopener"><img src="/guide/${g.shot}" alt="${esc(g.title)}" loading="lazy" style="max-width:100%;border:1px solid var(--line);border-radius:10px"></a><p class="hint" style="margin:0">Red boxes = what to click or fill. Blurred = personal details.</p>` : ''}
+        </div></div>`).join('')}
+      <div class="card card-pad"><button class="btn primary" id="ms-go-connect">Done — connect it to the dashboard →</button></div></div>`;
+    hydrateIcons($('#ms-body'));
+    $('#ms-go-connect').addEventListener('click', () => { ms.tab = 'connect'; renderMetaSetup(); hydrateIcons($('#page')); });
+    try {
+      const w = await api('GET', '/onboarding/webhook-info');
+      if ($('#ms-cb')) { $('#ms-cb').textContent = w.callbackUrl; $('#ms-vt').textContent = w.verifyToken; }
+    } catch { /* stays "…" */ }
+  }
+
+  // ---------- connect form ----------
+  function drawConnect() {
+    const c = ms.collected;
+    $('#ms-body').innerHTML = `<div class="card" style="max-width:720px"><div class="card-head"><span class="section-icon">${icon('key')}</span><div><h2>Connect your Meta account</h2><p>${isAdmin() ? 'Checked with Meta, then the business is created right away.' : 'Checked with Meta, then sent to the administrator to switch on.'}</p></div></div>
+      <form class="card-body stack" id="ms-form">
+        <div class="grid-2" style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+          <label class="field"><span>Business name</span><input class="input" name="businessName" required value="${esc(c.businessName || (isAdmin() ? '' : state.tenant?.businessName || ''))}" /></label>
+          <label class="field"><span>Type of business</span><select class="input" name="industry">${[['real_estate', 'Real estate'], ['clinic', 'Clinic / doctor'], ['salon', 'Salon / spa'], ['restaurant', 'Restaurant'], ['coaching', 'Coaching / education'], ['retail', 'Shop / e-commerce'], ['software', 'Software company'], ['general', 'General enquiry']].map(([k, l]) => `<option value="${k}">${l}</option>`).join('')}</select></label>
+          <label class="field"><span>WhatsApp Business Account ID</span><input class="input" name="wabaId" inputmode="numeric" required value="${esc(c.wabaId || '')}" placeholder="Messaging Account ID, digits" /></label>
+          <label class="field"><span>Phone number ID</span><input class="input" name="phoneNumberId" inputmode="numeric" required value="${esc(c.phoneNumberId || '')}" placeholder="digits" /></label>
+        </div>
+        <label class="field"><span>Permanent access key (token)</span><input class="input" type="password" name="accessToken" required autocomplete="off" value="${esc(ms.secrets.token || '')}" placeholder="EAA…" /></label>
+        <label class="field"><span>App secret (your own Meta app)</span><input class="input" type="password" name="appSecret" autocomplete="off" value="${esc(ms.secrets.secret || '')}" placeholder="32 letters/digits — App settings → Basic" /></label>
+        <label class="field"><span>Team alert number (gets booking alerts)</span><input class="input" name="adminNotificationPhone" inputmode="tel" required placeholder="919876543210" /></label>
+        <div class="row" style="gap:8px"><button class="btn" type="button" id="ms-check">${icon('check')}Check with Meta</button><button class="btn primary" type="submit">${isAdmin() ? 'Create the business' : 'Send to administrator'}</button></div>
+        <div id="ms-result"></div>
+      </form></div>`;
+    hydrateIcons($('#ms-body'));
+    const f = $('#ms-form'); const out = $('#ms-result');
+    const body = () => Object.fromEntries(new FormData(f).entries());
+    const show = (html) => { out.innerHTML = html; hydrateIcons(out); };
+    $('#ms-check').addEventListener('click', async () => {
+      show('<span class="spinner"></span> Asking Meta…');
+      try { const r = await api('POST', '/onboarding/check', body()); const ch = r.check;
+        show(`<div class="banner green">${icon('check')}<div>${ch.checked ? `Meta confirms: <strong>${esc(ch.verifiedName || '')}</strong> ${esc(ch.displayPhone || '')} belongs to this account.` : 'Format is right (the test copy cannot ask Meta).'}</div></div>`);
+      } catch (err) { show(`<div class="banner red">${icon('alert')}<div>${esc(err.message)}</div></div>`); }
+    });
+    f.addEventListener('submit', async (e) => {
+      e.preventDefault(); show('<span class="spinner"></span> Checking with Meta and connecting…');
+      try {
+        const r = await api('POST', '/onboarding', body());
+        if (r.created) {
+          show(`<div class="banner green">${icon('check')}<div><strong>${esc(r.tenant.businessName)} is created and connected.</strong> Give the owner this login key (shown once):<br><code style="word-break:break-all">${esc(r.apiKey)}</code>${r.webhookSubscribed === false ? '<br>Meta did not confirm the webhook subscription: check step "Messages to this dashboard" in the guide.' : ''}</div></div>`);
+          await loadTenants(); renderNav();
+        } else show(`<div class="banner green">${icon('check')}<div><strong>Sent.</strong> ${esc(r.message)} Meta confirmed the number ${esc(r.check?.displayPhone || '')}.</div></div>`);
+        ms.secrets = { token: '', secret: '' };
+      } catch (err) { show(`<div class="banner red">${icon('alert')}<div>${esc(err.message)}</div></div>`); }
+    });
+  }
+
+  // ---------- admin: requests ----------
+  async function drawRequests() {
+    $('#ms-body').innerHTML = '<div class="card"><div class="card-body" id="ms-req"><div class="skeleton" style="height:100px"></div></div></div>';
+    const el = $('#ms-req');
+    try {
+      const { data } = await api('GET', '/onboarding');
+      el.innerHTML = data.length ? `<table class="table"><thead><tr><th>Business</th><th>Number</th><th>Sent</th><th></th></tr></thead><tbody>${data.map((r) => `
+        <tr><td><strong>${esc(r.businessName)}</strong><div class="muted small">${esc(r.verifiedName || '')} · WABA ${esc(r.wabaId)}</div></td><td>${esc(r.displayPhone || r.phoneNumberId)}</td><td>${esc(relTime(r.createdAt))}</td>
+        <td class="row" style="gap:6px"><button class="btn sm primary" data-ok="${r._id}">Approve</button><button class="btn sm" data-no="${r._id}">Reject</button></td></tr>`).join('')}</tbody></table>`
+        : '<div class="empty"><p>No requests waiting.</p></div>';
+      el.addEventListener('click', async (e) => {
+        const b = e.target.closest('button'); if (!b) return;
+        const id = b.dataset.ok || b.dataset.no; if (!id) return;
+        if (b.dataset.no && !confirm('Reject this request?')) return;
+        b.disabled = true;
+        try {
+          const r = await api('POST', `/onboarding/${id}/${b.dataset.ok ? 'approve' : 'reject'}`);
+          if (r.apiKey) modal(`<div class="card-head"><span class="section-icon">${icon('check')}</span><div><h2>${esc(r.tenant.businessName)} is live</h2><p>Give the owner this login key (shown once).</p></div></div><div class="card-body"><code style="word-break:break-all">${esc(r.apiKey)}</code></div><div class="modal-foot"><button class="btn primary" data-close>Done</button></div>`);
+          await loadTenants(); drawRequests();
+        } catch (err) { toast('Could not do that', err.message, { kind: 'error' }); b.disabled = false; }
+      });
+    } catch (err) { el.innerHTML = `<p class="muted">${esc(err.message)}</p>`; }
   }
 
   // ============================================================

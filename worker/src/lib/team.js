@@ -166,6 +166,8 @@ export function describeAction(method, path) {
     [/^campaigns\/[^/]+\/[^/]+\/(pause|resume|cancel)$/, (m) => `${m[1][0].toUpperCase()}${m[1].slice(1)}d a broadcast campaign`],
     [/^tenants\/[^/]+\/sending/, () => 'Changed the daily sending limit'],
     [/^tenants\/[^/]+\/balance/, () => 'Updated the Meta balance'],
+    [/^onboarding\/[^/]+\/(approve|reject)$/, (m) => (m[1] === 'approve' ? 'Approved a new business (own Meta account)' : 'Rejected a business request')],
+    [/^onboarding$/, () => 'Connected a business’s own Meta account'],
     [/^uploads\//, () => 'Uploaded a file'],
     [/^team\//, () => (method === 'DELETE' ? 'Removed a team member' : 'Added a team member')],
   ];

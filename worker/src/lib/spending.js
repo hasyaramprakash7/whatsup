@@ -80,18 +80,13 @@ export function cleanBalance(b) {
 }
 
 /**
- * Balance left ≈ the typed balance − (what Meta charged since then + GST).
- * `spentSince` is the message cost after the balance was typed (without tax).
+ * The real balance exactly as shown in Meta Billing ("Available funds") when the owner copied it, and whether that is
+ * already too little for the campaign messages still waiting (price + 18% GST). No estimate, no counting down.
  */
-export function balanceEstimate(balance, spentSince, { costMarketing = 0.86, waitingCost = 0 } = {}) {
-  if (!balance || !Number.isFinite(Number(balance.amount))) return null;
-  const used = round((spentSince || 0) * (1 + GST));
-  const left = round(Number(balance.amount) - used);
-  const perMsg = costMarketing * (1 + GST);
-  const marketingLeft = perMsg > 0 ? Math.max(0, Math.floor(left / perMsg)) : null;
+export function balanceStatus(balance, { waitingCost = 0 } = {}) {
+  const amount = Number(balance.amount);
   const needed = round((waitingCost || 0) * (1 + GST));
-  const level = left <= 0 ? 'empty' : (needed && left < needed) || left < Math.max(50, perMsg * 25) ? 'low' : 'ok';
-  return { typed: balance.amount, typedAt: balance.setAt, spentSince: round(spentSince || 0), used, left, marketingLeft, needed, level };
+  return { amount, seenAt: balance.setAt || null, needed, short: needed > 0 && amount < needed, empty: amount <= 0 };
 }
 
 /** The Meta Billing page of this WhatsApp account, where the owner adds money or changes the card. */
@@ -131,29 +126,21 @@ export async function metaSpending(env, tenant, graph, { now = Date.now() } = {}
   const offset = env.SITE_UTC_OFFSET || '+05:30';
   const out = { available: false, demo: false, currency: null, accountName: null, fundingLinked: null, error: null, billingUrl: billingUrl(tenant.wabaId), checkedAt: new Date(now).toISOString() };
   const base = String(env.GRAPH_BASE_URL || '');
-  const since = Date.parse(tenant.sending?.balance?.setAt || '');
   if (base === 'fake') {
     const pts = demoPoints(now);
     return { ...out, available: true, demo: true, currency: 'INR', accountName: 'Test account (sample numbers)',
-      spentSinceBalance: Number.isFinite(since) ? costSince(pts, since) : null,
       ...summarizePricing(pts, { now, offset, phones: [{ phone: '919000000001', name: tenant.businessName, quality: 'GREEN', display: '+91 90000 00001' }] }) };
   }
   if (!tenant.wabaId) return { ...out, error: 'No WhatsApp Business Account ID saved for this business (Businesses → Edit → WABA ID).' };
   const off = offsetMs(offset);
   const { month, day } = localStarts(now, off);
   const from = Math.floor(Math.min(month, day - 29 * DAY) / 1000); const to = Math.floor(now / 1000);
-  // Since the balance was typed: half-hour buckets so only charges after that moment count.
-  const sinceSec = Number.isFinite(since) ? Math.max(Math.floor(since / 1000), to - 30 * 86400) : null;
-  const [acct, funding, phones, pricing, recent] = await Promise.all([
+  const [acct, funding, phones, pricing] = await Promise.all([
     graph(`${tenant.wabaId}?fields=name,currency`),
     graph(`${tenant.wabaId}?fields=primary_funding_id`),
     graph(`${tenant.wabaId}/phone_numbers?fields=display_phone_number,verified_name,quality_rating&limit=50`),
     graph(`${tenant.wabaId}?fields=pricing_analytics.start(${from}).end(${to}).granularity(DAILY).dimensions(PRICING_CATEGORY,PRICING_TYPE,PHONE)`),
-    sinceSec != null && sinceSec < to ? graph(`${tenant.wabaId}?fields=pricing_analytics.start(${sinceSec}).end(${to}).granularity(HALF_HOUR).metric_types(COST)`) : Promise.resolve(null),
   ].map((p) => p.catch((e) => ({ ok: false, data: { error: { message: e.message } } }))));
-  if (Number.isFinite(since)) {
-    out.spentSinceBalance = recent?.ok ? costSince((recent.data.pricing_analytics?.data || []).flatMap((d) => d.data_points || []), since) : recent === null ? 0 : null;
-  }
   if (acct.ok) { out.accountName = acct.data.name || null; out.currency = acct.data.currency || null; }
   if (funding.ok) out.fundingLinked = !!funding.data.primary_funding_id;
   const phoneList = phones.ok ? (phones.data.data || []).map((p) => ({ phone: p.display_phone_number, display: p.display_phone_number, name: p.verified_name, quality: p.quality_rating })) : [];

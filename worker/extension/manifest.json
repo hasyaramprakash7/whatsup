@@ -1,0 +1,27 @@
+{
+  "manifest_version": 3,
+  "name": "Bluxury Meta Helper",
+  "version": "0.2.0",
+  "description": "Lets the AI helper in your Bluxury WhatsApp dashboard open your Meta pages and fill them in for you, step by step.",
+  "permissions": ["tabs", "scripting"],
+  "host_permissions": [
+    "https://*.facebook.com/*",
+    "https://*.meta.com/*",
+    "https://*.whatsapp.com/*"
+  ],
+  "background": { "service_worker": "background.js" },
+  "content_scripts": [
+    {
+      "matches": [
+        "https://whatsapp-agent.hasya7893828468.workers.dev/*",
+        "https://whatsapp-agent-staging.hasya7893828468.workers.dev/*",
+        "http://localhost/*",
+        "http://127.0.0.1/*"
+      ],
+      "js": ["bridge.js"],
+      "run_at": "document_start"
+    }
+  ],
+  "icons": { "128": "icon-128.png" },
+  "action": { "default_title": "Bluxury Meta Helper", "default_icon": { "128": "icon-128.png" } }
+}

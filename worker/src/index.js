@@ -6,7 +6,7 @@ import {
   getTenant, rowToTenant, getTenantByPhoneNumberId, getTenantByKeyHash, listTenants, insertTenant, updateTenant, publicTenant, tenantAccessToken,
   getLead, upsertLead, updateLeads, listLeads, leadStats, listChats, listMessages, applyMessageStatus,
 } from './lib/db.js';
-import { sha256Hex, safeEqual, verifyMetaSignature, generateApiKey, encryptToken, TENANT_KEY_PREFIX, signWsTicket, verifyWsTicket } from './lib/crypto.js';
+import { sha256Hex, safeEqual, verifyMetaSignature, generateApiKey, encryptToken, decryptToken, TENANT_KEY_PREFIX, signWsTicket, verifyWsTicket } from './lib/crypto.js';
 import { normalizePhone, isValidPhone, parseCsv, pickPhone, pickName, nowIso } from './lib/text.js';
 import { validateFlow, validateProfile, validateAi, flowFields } from './lib/flow.js';
 import { translateFlow, translateCatalogs } from './lib/lang.js';
@@ -18,7 +18,9 @@ import { TEMPLATES, flowFromTemplate, getTemplate, personalizeFlow } from './lib
 import { WhatsAppClient } from './lib/whatsapp.js';
 import { sendingSettings, dailyLimit, usage, sendingWindow, daysNeeded, costEach, cleanSending, templateShape, cleanParams, createCampaign, getCampaign, listCampaigns, listRecipients,
   setCampaignStatus, pauseAll, applyRecipientStatus, refreshMetaLimits, PAUSE_REASONS } from './lib/campaigns.js';
-import { metaSpending, campaignEstimate, cleanBalance, balanceEstimate } from './lib/spending.js';
+import { metaSpending, campaignEstimate, cleanBalance, balanceStatus, billingUrl } from './lib/spending.js';
+import { TASKS as HELPER_TASKS, nextStep, takeStep } from './lib/helper.js';
+import { cleanConnect, verifyWithMeta, saveRequest, listRequests, getRequest, publicRequest, decideRequest } from './lib/onboarding.js';
 import { outboundRecorder, publish } from './lib/chatlog.js';
 import { aiDecide } from './lib/ai.js';
 import { MEDIA_FILE, moveInboundToPrivate } from './lib/media.js';
@@ -101,7 +103,7 @@ app.use('/api/*', async (c, next) => {
   c.set('auth', auth);
   await next();
   // Activity log: every change, with who made it.
-  if (c.req.method !== 'GET' && c.res.status < 400 && !/^\/api\/(push|ws-ticket|me)\//.test(c.req.path) && !/\/read$/.test(c.req.path) && !/\/(preview|ai-test|translate)$/.test(c.req.path)) {
+  if (c.req.method !== 'GET' && c.res.status < 400 && !/^\/api\/(push|ws-ticket|me|helper)\//.test(c.req.path) && c.req.path !== '/api/onboarding/check' && !/\/read$/.test(c.req.path) && !/\/(preview|ai-test|translate)$/.test(c.req.path)) {
     const seg = c.req.path.split('/')[3];
     c.executionCtx.waitUntil(audit(c.env, auth, describeAction(c.req.method, c.req.path), '', isId(seg) ? seg : auth.tenantId || null));
   }
@@ -173,6 +175,23 @@ app.post('/push/ack', async (c) => {
   return ok ? c.json({ success: true }) : fail(c, 404, 'Unknown device.');
 });
 
+/**
+ * Webhooks from a business that uses its own Meta app are signed with that app's secret: accept them only when every
+ * phone number in the event belongs to such a business and its secret matches.
+ */
+async function ownAppSignature(env, raw, sig) {
+  let body; try { body = JSON.parse(new TextDecoder().decode(raw)); } catch { return false; }
+  const pnids = new Set((body?.entry || []).flatMap((e) => (e?.changes || []).map((ch) => ch?.value?.metadata?.phone_number_id)).filter(Boolean));
+  if (!pnids.size) return false;
+  for (const pnid of pnids) {
+    const t = await getTenantByPhoneNumberId(env, String(pnid));
+    if (!t?._appSecretEnc) return false;
+    const own = await decryptToken(env.TOKEN_ENCRYPTION_KEY, t._appSecretEnc).catch(() => null);
+    if (!own || !await verifyMetaSignature(own, raw, sig)) return false;
+  }
+  return true;
+}
+
 app.get('/webhook', async (c) => {
   const expected = c.env.WHATSAPP_VERIFY_TOKEN;
   const token = c.req.query('hub.verify_token');
@@ -184,7 +203,8 @@ app.post('/webhook', async (c) => {
   const raw = await c.req.arrayBuffer();
   const secret = c.env.META_APP_SECRET;
   if (secret) {
-    if (!await verifyMetaSignature(secret, raw, c.req.header('x-hub-signature-256'))) return c.text('Invalid signature', 401);
+    const sig = c.req.header('x-hub-signature-256');
+    if (!await verifyMetaSignature(secret, raw, sig) && !await ownAppSignature(c.env, raw, sig)) return c.text('Invalid signature', 401);
   } else if (c.env.ALLOW_UNSIGNED_WEBHOOKS !== 'true') {
     console.error('[Webhook] META_APP_SECRET is not set — rejecting.');
     return c.text('Webhook secret not configured', 500);
@@ -813,7 +833,8 @@ app.get('/api/spending/:tid', tenantAccess(), async (c) => {
     limitInfo(c, tenant),
   ]);
   const s = sendingSettings(tenant);
-  const balance = s.balance ? { ...balanceEstimate(s.balance, meta.spentSinceBalance ?? 0, { costMarketing: s.costMarketing, waitingCost: estimate.waitingCost }), exact: meta.spentSinceBalance != null } : null;
+  // Only the real figure from Meta Billing as the owner copied it (Meta gives apps no way to read it): no guessing.
+  const balance = s.balance && Number.isFinite(Number(s.balance.amount)) ? balanceStatus(s.balance, { waitingCost: estimate.waitingCost }) : null;
   return c.json({ success: true, data: { ...meta, estimate, limit, balance } });
 });
 
@@ -825,6 +846,80 @@ app.put('/api/tenants/:tid/balance', tenantAccess(), async (c) => {
   if (error) return fail(c, 400, error);
   await c.env.DB.prepare("UPDATE tenants SET sending = json_set(COALESCE(sending, '{}'), '$.balance', json(?)) WHERE id = ?").bind(JSON.stringify(value), tenant._id).run();
   return c.json({ success: true, balance: value });
+});
+
+// ---------- AI setup helper + connect your own Meta account ----------
+/** One step of the AI helper: the page the extension saw → what to do next. */
+app.post('/api/helper/:tid/step', tenantAccess(), async (c) => {
+  const tenant = await getTenant(c.env, c.req.param('tid'));
+  if (!tenant) return fail(c, 404, 'Not found');
+  const b = await c.req.json().catch(() => ({}));
+  if (!HELPER_TASKS[b.task]) return fail(c, 400, 'Unknown task.');
+  if (!await takeStep(c.env, tenant._id)) return fail(c, 429, 'The AI helper has used today\'s free steps. Please continue tomorrow, or follow the written steps.');
+  const facts = { businessName: tenant.businessName, billingPage: billingUrl(tenant.wabaId) };
+  for (const [k, v] of Object.entries(b.facts || {})) if (/^[a-zA-Z]{2,20}$/.test(k) && typeof v === 'string' && v.length <= 120) facts[k] = v;
+  const history = Array.isArray(b.history) ? b.history.slice(-20).map((h) => ({ action: h?.action || null, result: String(h?.result || '').slice(0, 300) })) : [];
+  const obs = b.observation && typeof b.observation === 'object' ? b.observation : null;
+  const out = await nextStep(c.env, { task: b.task, facts, history, observation: obs, reply: typeof b.reply === 'string' ? b.reply : '' });
+  return c.json({ success: true, ...out });
+});
+
+/** Checks the IDs + access key with Meta before anything is saved. */
+app.post('/api/onboarding/check', async (c) => {
+  const { value, errors } = cleanConnect(await c.req.json().catch(() => ({})));
+  if (errors) return fail(c, 400, errors[0], { errors });
+  const check = await verifyWithMeta(c.env, value);
+  return check.ok ? c.json({ success: true, check }) : fail(c, 400, check.error, { check });
+});
+
+/** Creates the business with its own Meta account: an admin's goes live now; a business's own login waits for approval. */
+async function createOwnMetaTenant(c, v, encToken, encSecret) {
+  if (await getTenantByPhoneNumberId(c.env, v.phoneNumberId)) throw Object.assign(new Error('That phone number ID is already connected to a business.'), { status: 409 });
+  const industry = getTemplate(v.industry).key;
+  const { value: profile } = validateProfile({ displayName: v.businessName, faq: [] });
+  const { key, hash } = await generateApiKey();
+  const tenant = await insertTenant(c.env, {
+    businessName: v.businessName, industry, phoneNumberId: v.phoneNumberId, wabaId: v.wabaId, accessTokenEnc: encToken, appSecretEnc: encSecret || null,
+    apiKeyHash: hash, adminNotificationPhone: v.adminPhone, tier: 0, isActive: true,
+    profile, flow: flowFromTemplate(industry), ai: validateAi({ enabled: false }).value, templates: {},
+  });
+  // Messages from this number come to us (their app's webhook must point to /webhook; see the guide).
+  let webhook = null;
+  if (String(c.env.GRAPH_BASE_URL) !== 'fake') webhook = (await graph(c, tenant, 'POST', `${v.wabaId}/subscribed_apps`)).ok;
+  return { tenant: publicTenant(tenant), apiKey: key, webhookSubscribed: webhook };
+}
+
+app.post('/api/onboarding', async (c) => {
+  const a = c.get('auth');
+  const { value, errors } = cleanConnect(await c.req.json().catch(() => ({})));
+  if (errors) return fail(c, 400, errors[0], { errors });
+  const check = await verifyWithMeta(c.env, value);
+  if (!check.ok) return fail(c, 400, check.error, { check });
+  if (await getTenantByPhoneNumberId(c.env, value.phoneNumberId)) return fail(c, 409, 'That phone number ID is already connected to a business.');
+  if (a.role === 'admin') {
+    try {
+      const out = await createOwnMetaTenant(c, value, await encryptToken(c.env.TOKEN_ENCRYPTION_KEY, value.accessToken), value.appSecret ? await encryptToken(c.env.TOKEN_ENCRYPTION_KEY, value.appSecret) : null);
+      return c.json({ success: true, created: true, check, ...out }, 201);
+    } catch (err) { return fail(c, err.status || 500, err.message); }
+  }
+  const id = await saveRequest(c.env, a.tenantId, value, check);
+  return c.json({ success: true, created: false, requestId: id, check, message: 'Sent to the administrator for approval.' }, 201);
+});
+
+/** What a business types in its own Meta app's webhook settings so its messages reach this dashboard. */
+app.get('/api/onboarding/webhook-info', (c) => c.json({ success: true, callbackUrl: `${new URL(c.req.url).origin}/webhook`, verifyToken: c.env.WHATSAPP_VERIFY_TOKEN || '' }));
+
+app.get('/api/onboarding', requireAdmin, async (c) => c.json({ success: true, data: (await listRequests(c.env, c.req.query('status') || 'waiting')).map(publicRequest) }));
+
+app.post('/api/onboarding/:id/:decision{approve|reject}', requireAdmin, async (c) => {
+  const r = await getRequest(c.env, c.req.param('id'));
+  if (!r || r.status !== 'waiting') return fail(c, 404, 'Request not found or already decided.');
+  if (c.req.param('decision') === 'reject') { await decideRequest(c.env, r._id, 'rejected'); return c.json({ success: true }); }
+  try {
+    const out = await createOwnMetaTenant(c, { ...r, adminPhone: r.adminPhone }, r._tokenEnc, r._secretEnc);
+    await decideRequest(c.env, r._id, 'approved', out.tenant._id);
+    return c.json({ success: true, ...out });
+  } catch (err) { return fail(c, err.status || 500, err.message); }
 });
 
 /** Creates a campaign from the ticked contacts and starts (or schedules) it. Big lists continue day after day. */
