@@ -535,7 +535,7 @@ export class Conversation {
         if (this.state.askedStep !== step.id || Date.now() - (this.state.askedAt || 0) > REASK_AFTER_MS) return this.ask(step);
         return null;
       }
-      if (d?.action === 'handoff') return this.handoff(message, d.reply);
+      if (d?.action === 'handoff') return (await this.unclearVoice(message)) || this.handoff(message, d.reply);
     }
 
     this.state.unexpected = (this.state.unexpected || 0) + 1;
@@ -569,7 +569,7 @@ export class Conversation {
     }
     if (this.aiCfg.answerAfterFlow !== false && await this.aiAvailable(message)) {
       const d = await aiDecide(this.env, { tenant: this.tenant, aiCfg: this.aiCfg, pending: null, catalog: await this.catalog(), customerPlace: this.customerPlace(), history: await recentTurns(this.env, this.tenant._id, this.phone) });
-      if (d?.action === 'handoff') return this.handoff(message, d.reply);
+      if (d?.action === 'handoff') return (await this.unclearVoice(message)) || this.handoff(message, d.reply);
       const visitStep = this.visitStep();
       if (d?.requestedTime && visitStep) {
         const req = checkLocalTime(d.requestedTime, new Date(), this.visitHours(visitStep));
@@ -615,6 +615,19 @@ export class Conversation {
     this.state.offeredAt = Date.now();
     if (this.state.done) this.reopenVisit(visit);
     await this.ask({ ...visit, text: `Would you like to ${this.visitWord()} *${it.name}*? 🏡 Pick a time below, or type the day and time you prefer:` });
+  }
+
+  /**
+   * A voice note the AI couldn't make sense of is usually a bad transcript (Indian languages are hard for the
+   * speech engine), not a customer who needs a person. Ask once to type it or send it again; a second unclear
+   * voice note within 10 minutes goes to the team as usual. Returns true when it asked.
+   */
+  async unclearVoice(message) {
+    if (!message?.voice) return false;
+    if (Date.now() - (this.state.voiceRetryAt || 0) < 10 * 60 * 1000) return false;
+    this.state.voiceRetryAt = Date.now();
+    await this.bot.text(this.phone, "Sorry, I couldn't catch that voice note clearly 🙏 Could you please type it, or send the voice note again speaking a little slowly?");
+    return true;
   }
 
   /** Hands the chat to the team: tells the customer, pauses the bot for this chat, alerts the team. */
