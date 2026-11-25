@@ -10,3 +10,6 @@ test.csv
 worker/node_modules/
 worker/.wrangler/
 worker/.dev.vars
+
+worker/.staging.vars
+worker/.staging-seed.sql

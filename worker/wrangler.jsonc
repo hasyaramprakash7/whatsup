@@ -67,6 +67,47 @@
     "RETENTION_DAYS": "365",
     // Contact for phone push services (Web Push VAPID "sub")
     "VAPID_SUBJECT": "https://whatsapp-agent.hasya7893828468.workers.dev"
+  },
+  // Secrets (wrangler secret put / .dev.vars): ADMIN_API_KEY, META_APP_SECRET, WHATSAPP_VERIFY_TOKEN, TOKEN_ENCRYPTION_KEY, VAPID_PUBLIC_KEY, VAPID_PRIVATE_KEY.
+
+  // ---------- staging: a separate copy for trying changes before customers see them ----------
+  // npm run deploy:staging  →  https://whatsapp-agent-staging.<account>.workers.dev
+  // Own database and storage, no WhatsApp number, no monitor cron. Secrets: worker/.staging.vars (git-ignored).
+  "env": {
+    "staging": {
+      "name": "whatsapp-agent-staging",
+      "triggers": { "crons": [] },
+      "ratelimits": [
+        { "name": "API_LIMIT", "namespace_id": "4201", "simple": { "limit": 600, "period": 60 } },
+        { "name": "AUTH_LIMIT", "namespace_id": "4202", "simple": { "limit": 20, "period": 60 } }
+      ],
+      "d1_databases": [
+        { "binding": "DB", "database_name": "whatsapp-agent-staging", "database_id": "53c64ec2-babc-41b7-8fe6-fde217141572", "migrations_dir": "migrations" }
+      ],
+      "durable_objects": {
+        "bindings": [
+          { "name": "CONVERSATION", "class_name": "ConversationDO" },
+          { "name": "HUB", "class_name": "BusinessHub" }
+        ]
+      },
+      "r2_buckets": [
+        { "binding": "MEDIA", "bucket_name": "whatsapp-agent-staging" },
+        { "binding": "PRIVATE_MEDIA", "bucket_name": "whatsapp-agent-staging" }
+      ],
+      "ai": { "binding": "AI" },
+      "vars": {
+        "STAGE": "staging",
+        "AI_MODEL": "@cf/meta/llama-3.3-70b-instruct-fp8-fast",
+        "GRAPH_API_VERSION": "v25.0",
+        "GRAPH_BASE_URL": "https://graph.facebook.com",
+        "R2_PUBLIC_BASE_URL": "https://pub-8d93705764b8407a957deeec1fc05dda.r2.dev",
+        "SITE_UTC_OFFSET": "+05:30",
+        "DEFAULT_BROADCAST_TEMPLATE": "realestate_reengage_v1",
+        "DEFAULT_BROADCAST_LANGUAGE": "en",
+        "BROADCAST_RATE_PER_SECOND": "10",
+        "RETENTION_DAYS": "365",
+        "VAPID_SUBJECT": "https://whatsapp-agent-staging.hasya7893828468.workers.dev"
+      }
+    }
   }
-  // Secrets (wrangler secret put / .dev.vars): ADMIN_API_KEY, META_APP_SECRET, WHATSAPP_VERIFY_TOKEN, TOKEN_ENCRYPTION_KEY
 }
