@@ -41,7 +41,7 @@ function businessFacts(tenant) {
   return lines.join('\n');
 }
 
-function systemPrompt(tenant, aiCfg, pending, catalog, customerPlace = null, offset = '+05:30') {
+function systemPrompt(tenant, aiCfg, pending, catalog, customerPlace = null, offset = '+05:30', language = null) {
   const name = tenant.profile?.displayName || tenant.businessName;
   const items = catalogFacts(catalog);
   return [
@@ -56,7 +56,11 @@ function systemPrompt(tenant, aiCfg, pending, catalog, customerPlace = null, off
     'RULES:',
     '- Answer ONLY from the business information above. Never invent prices, availability, offers, addresses or policies.',
     '- If the answer is not in the information, or the customer asks for a person, a call, a complaint or anything sensitive, use action "handoff" and say a team member will contact them.',
-    '- Reply in the same language the customer writes in. Keep replies short: 1–3 sentences, plain WhatsApp text (you may use *bold*).',
+    language === 'te'
+      ? '- The customer speaks Telugu: ALWAYS reply in simple, everyday Telugu (Telugu script), even if they write in English letters. Keep project names, prices, numbers and common English words (BHK, site visit, project) as they are. Keep replies short: 1–3 sentences, plain WhatsApp text (you may use *bold*). The same rule applies in Telugu: state ONLY facts written in the business information above; if something (schools, hospitals, distances, offers, loans, amenities…) is not written there, do NOT say yes or no — say our team will confirm it (action "handoff" if they insist).'
+      : language === 'en'
+        ? '- Reply in English. Keep replies short: 1–3 sentences, plain WhatsApp text (you may use *bold*).'
+        : '- Reply in the same language the customer writes in. Keep replies short: 1–3 sentences, plain WhatsApp text (you may use *bold*).',
     '- Never ask for payment details, passwords or ID numbers.',
     tenant.industry === 'software' ? '- Never write prices, budgets or amounts. If they ask about cost, say every project gets its own quotation and ask for their budget and the options they need; our team will send an exact quotation by email or call.' : '',
     '- Never write a web link unless it appears exactly in the business information above. Never make up links (no example.com or placeholders).',
@@ -99,9 +103,9 @@ const turnText = (t) => {
  * pending: { question, options: [{ id, title }] } while a step waits for an answer, else null.
  * Returns { action, optionId, reply } or null if the AI is unavailable or returned nonsense.
  */
-export async function aiDecide(env, { tenant, aiCfg, pending, history, catalog = [], customerPlace = null }) {
+export async function aiDecide(env, { tenant, aiCfg, pending, history, catalog = [], customerPlace = null, language = null }) {
   if (!env.AI) return null;
-  const messages = [{ role: 'system', content: systemPrompt(tenant, aiCfg, pending, catalog, customerPlace, env.SITE_UTC_OFFSET) }];
+  const messages = [{ role: 'system', content: systemPrompt(tenant, aiCfg, pending, catalog, customerPlace, env.SITE_UTC_OFFSET, language) }];
   for (const t of history) messages.push({ role: t.direction === 'in' ? 'user' : 'assistant', content: turnText(t).slice(0, 1500) });
   if (messages[messages.length - 1].role !== 'user') return null;
 

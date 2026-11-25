@@ -1,5 +1,6 @@
 // Validation for the Flow Builder, Business Profile and AI settings, plus small flow helpers.
 import { DEFAULT_MESSAGES } from './templates.js';
+import { flowStrings, stringLimit } from './lang.js';
 
 export const STEP_TYPES = ['choice', 'question', 'slots', 'send', 'finish'];
 export const QUESTION_INPUTS = ['text', 'name', 'email', 'phone', 'number', 'date', 'location'];
@@ -118,7 +119,22 @@ export function validateFlow(input) {
     if (v.length > 4096) errors.push(`Message "${k}" must be 4096 characters or fewer.`);
     messages[k] = v;
   }
-  return { value: { enabled: input.enabled !== false, template: str(input.template) || null, steps, messages }, errors };
+  // Telugu wording: { te: { "<key>": "<text>" } } with the keys of lang.flowStrings (texts of steps/options that no longer
+  // exist are dropped; a missing one falls back to the English text).
+  const value = { enabled: input.enabled !== false, template: str(input.template) || null, steps, messages };
+  const te = input.i18n?.te && typeof input.i18n.te === 'object' ? input.i18n.te : null;
+  if (te) {
+    const keys = new Set(Object.keys(flowStrings(value)));
+    const clean = {};
+    for (const [k, v] of Object.entries(te)) {
+      const t = str(v);
+      if (!keys.has(k) || !t) continue;
+      if (t.length > stringLimit(k, value)) { errors.push(`Telugu text "${k}" is longer than WhatsApp allows (${stringLimit(k, value)} characters).`); continue; }
+      clean[k] = t;
+    }
+    value.i18n = { te: clean };
+  }
+  return { value, errors };
 }
 
 export function validateProfile(input) {

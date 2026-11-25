@@ -9,6 +9,7 @@ import {
 import { sha256Hex, safeEqual, verifyMetaSignature, generateApiKey, encryptToken, TENANT_KEY_PREFIX, signWsTicket, verifyWsTicket } from './lib/crypto.js';
 import { normalizePhone, isValidPhone, parseCsv, pickPhone, pickName, nowIso } from './lib/text.js';
 import { validateFlow, validateProfile, validateAi, flowFields } from './lib/flow.js';
+import { translateFlow } from './lib/lang.js';
 import { TEMPLATES, flowFromTemplate, getTemplate, personalizeFlow } from './lib/templates.js';
 import { WhatsAppClient } from './lib/whatsapp.js';
 import { outboundRecorder, publish } from './lib/chatlog.js';
@@ -308,6 +309,19 @@ app.get('/api/tenants/:tid', tenantAccess(), async (c) => {
 
 const TEMPLATE_NAME_RE = /^[a-z0-9_]{1,512}$/;
 const LANGUAGE_RE = /^[a-z]{2,3}(_[A-Z]{2})?$/;
+
+/** Telugu for the flow's texts (free Workers AI). Body: { flow } (the builder's draft) — returns { te, skipped } to review, not saved. */
+app.post('/api/tenants/:tid/translate', tenantAccess(), async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  const current = await getTenant(c.env, c.req.param('tid'));
+  if (!current) return fail(c, 404, 'Not found');
+  const { value, errors } = validateFlow(b.flow || current.flow);
+  if (!value) return fail(c, 400, errors.join(' '));
+  if (!c.env.AI) return fail(c, 503, 'The AI is not available.');
+  const keep = b.onlyMissing ? (value.i18n?.te || {}) : null;
+  const { te, skipped } = await translateFlow(c.env, value, { onlyMissing: keep });
+  return c.json({ success: true, te: { ...(keep || {}), ...te }, skipped });
+});
 
 app.patch('/api/tenants/:tid', tenantAccess(), async (c) => {
   const id = c.req.param('tid');
@@ -736,8 +750,14 @@ app.post('/api/chats/:tid/:phone/read', tenantAccess(), phoneOk, async (c) => {
 app.patch('/api/chats/:tid/:phone', tenantAccess(), phoneOk, async (c) => {
   const { tid, phone } = c.req.param();
   const body = await c.req.json().catch(() => ({}));
-  if (typeof body.botPaused !== 'boolean') return fail(c, 400, 'Send { "botPaused": true | false }.');
-  const [lead] = await updateLeads(c.env, tid, 'phone = ?', [phone], { botPaused: body.botPaused });
+  const patch = {};
+  if (typeof body.botPaused === 'boolean') patch.botPaused = body.botPaused;
+  if (body.language !== undefined) {
+    if (body.language !== null && !['en', 'te'].includes(body.language)) return fail(c, 400, 'language must be "en", "te" or null.');
+    patch.language = body.language;
+  }
+  if (!Object.keys(patch).length) return fail(c, 400, 'Send { "botPaused": true | false } and/or { "language": "en" | "te" | null }.');
+  const [lead] = await updateLeads(c.env, tid, 'phone = ?', [phone], patch);
   if (!lead) return fail(c, 404, 'Chat not found');
   await publish(c.env, tid, 'lead:update', { lead });
   return c.json({ success: true, lead });

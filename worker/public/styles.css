@@ -1010,3 +1010,7 @@ img, video { max-width: 100%; }
 /* Opening screen + brand panels: sharp 4x picture (same layout); the soft blurred edge layer keeps the small file. */
 .splash::before { background-image: url(/brand-splash-4k.jpg); }
 .login-brand, .features-head { background-image: url(/brand-splash-4k.jpg); }
+
+/* Inbox: the customer's language */
+.lang-pick { width: auto; height: 32px; padding: 0 28px 0 10px; font-size: 13px; border-radius: 9px; }
+@media (max-width: 860px) { .lang-pick { max-width: 92px; } }

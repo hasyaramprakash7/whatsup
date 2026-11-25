@@ -1090,7 +1090,7 @@
         <div class="grow">
           <div class="top"><span class="name">${esc(displayName(l))}</span><span class="time">${shortWhen(l.lastMessageAt)}</span></div>
           <div class="bottom"><span class="preview">${by ? `<span style="opacity:.7">${by}: </span>` : ''}${esc(plain)}</span>${l.unreadCount ? `<span class="badge">${l.unreadCount}</span>` : ''}</div>
-          <div class="tags">${statusPill(l.status)}${l.botPaused ? `<span class="pill plain" title="Bot paused — your team is handling this chat">${icon('pause', 'sm')}Team</span>` : ''}</div>
+          <div class="tags">${statusPill(l.status)}${l.language === 'te' ? '<span class="pill plain" title="Talks in Telugu">తె</span>' : ''}${l.botPaused ? `<span class="pill plain" title="Bot paused — your team is handling this chat">${icon('pause', 'sm')}Team</span>` : ''}</div>
         </div></div>`;
     }).join('') + (ib.hasMore ? '<div style="padding:12px;text-align:center" class="muted small">Scroll for more…</div>' : '');
     $$('.chat-item', el).forEach((item) => {
@@ -1137,12 +1137,21 @@
       <button class="btn icon ghost back" aria-label="Back to chats" id="conv-back">${icon('back')}</button>
       ${avatar(l.name, l.phone)}
       <div class="grow"><div class="name">${esc(displayName(l))}</div><div class="sub"><span>${esc(fmtPhone(l.phone))}</span>${statusPill(l.status)}</div></div>
+      <select id="lang-pick" class="lang-pick" title="Language the bot uses with this customer (set automatically from what they write)">
+        <option value="" ${!l.language ? 'selected' : ''}>🌐 Auto</option><option value="en" ${l.language === 'en' ? 'selected' : ''}>English</option><option value="te" ${l.language === 'te' ? 'selected' : ''}>తెలుగు</option></select>
       <label class="switch bot-toggle" title="When the bot is off, only your team replies in this chat">
         <input type="checkbox" id="bot-toggle" ${l.botPaused ? '' : 'checked'} /><span class="track"></span><span class="lbl">${l.botPaused ? 'Bot paused' : 'Bot on'}</span></label>
       <button class="btn icon ghost" id="details-toggle" title="Customer details" aria-label="Customer details">${icon('panel')}</button>`;
     $('#conv-back').addEventListener('click', () => { location.hash = '#/inbox'; });
     $('#details-toggle').addEventListener('click', () => { ib.detailsOpen = !ib.detailsOpen; $('#inbox').classList.toggle('no-details', !ib.detailsOpen); });
     $('#details').addEventListener('click', (e) => { if (e.target.closest('#details-close')) { ib.detailsOpen = false; $('#inbox').classList.add('no-details'); } });
+    $('#lang-pick').addEventListener('change', async (e) => {
+      try {
+        const { lead } = await api('PATCH', `/chats/${state.tenantId}/${l.phone}`, { language: e.target.value || null });
+        onLeadUpdate(lead);
+        toast('Language updated', e.target.value === 'te' ? 'The bot will reply to this customer in Telugu.' : e.target.value === 'en' ? 'The bot will reply to this customer in English.' : 'The bot will pick the language from what the customer writes.');
+      } catch (err) { toast('Could not change the language', err.message, { kind: 'error' }); }
+    });
     $('#bot-toggle').addEventListener('change', async (e) => {
       const botPaused = !e.target.checked;
       try {
@@ -1730,6 +1739,7 @@
           <div class="card"><div class="card-head"><span class="section-icon red">${icon('reply')}</span><div><h2>Other replies</h2><p>Edge cases the bot handles for you</p></div></div>
             <div class="card-body stack">${Object.entries(MESSAGE_LABELS).map(([k, [label, hint]]) => `
               <label class="field"><span>${label}</span><textarea rows="2" data-path="messages.${k}" maxlength="4096">${esc(d.messages[k] || '')}</textarea>${hint ? `<span class="hint">${hint}</span>` : ''}</label>`).join('')}</div></div>
+          <div class="card" id="te-card"></div>
           <div id="builder-errors"></div>
           <div class="save-bar" id="save-bar" ${b.dirty ? '' : 'hidden'}><span>${icon('info')}</span><strong>You have unsaved changes</strong><span class="spacer"></span>
             <button class="btn ghost" id="b-discard">Discard</button><button class="btn primary" id="b-save">${icon('check')}Save & publish</button></div>
@@ -1745,6 +1755,55 @@
     root.addEventListener('input', onBuilderInput);
     root.addEventListener('change', onBuilderChange);
     root.addEventListener('click', onBuilderClick);
+    renderTeluguCard();
+  }
+
+  // ---- Telugu wording: customers who write or speak Telugu get these texts (empty = the English is used) ----
+  /** The flow's customer-facing texts with their WhatsApp limits — same keys as the server (lang.flowStrings). */
+  function teluguKeys(d) {
+    const out = [];
+    (d.steps || []).forEach((s, i) => {
+      const where = `Step ${i + 1}`;
+      const textMax = s.type === 'finish' || s.type === 'send' ? 4096 : 1024;
+      if (s.text) out.push({ key: `s.${s.id}.text`, en: s.text, label: `${where} · message`, max: textMax, long: true });
+      if (s.type === 'choice') {
+        const asList = s.forceList || (s.options || []).length > 3;
+        (s.options || []).forEach((o, j) => {
+          if (o.title) out.push({ key: `o.${s.id}.${o.id}.title`, en: o.title, label: `${where} · option ${j + 1}`, max: asList ? 24 : 20 });
+          if (o.description) out.push({ key: `o.${s.id}.${o.id}.description`, en: o.description, label: `${where} · option ${j + 1} description`, max: 72 });
+        });
+        for (const [k, max, l] of [['listHeader', 60, 'list title'], ['listButton', 20, 'list button'], ['listSection', 24, 'list section']]) if (s[k]) out.push({ key: `s.${s.id}.${k}`, en: s[k], label: `${where} · ${l}`, max });
+      }
+    });
+    for (const [k, v] of Object.entries(d.messages || {})) if (v) out.push({ key: `m.${k}`, en: v, label: `Reply · ${(MESSAGE_LABELS[k] || [k])[0]}`, max: 4096, long: true });
+    return out;
+  }
+  function renderTeluguCard() {
+    const card = $('#te-card'); if (!card) return;
+    const d = state.builder.draft; const te = d.i18n?.te || {};
+    const keys = teluguKeys(d); const done = keys.filter((k) => te[k.key]).length;
+    card.innerHTML = `<div class="card-head"><span class="section-icon" style="background:#fef3c7;color:#b45309">${icon('chat')}</span><div><h2>తెలుగు · Telugu wording</h2>
+        <p>Customers who write or speak Telugu get these texts. An empty box uses the English. ${done}/${keys.length} translated.</p></div><span class="spacer"></span>
+        <button type="button" class="btn sm primary" id="te-auto">${icon('sparkle', 'sm')}${done ? 'Translate the empty ones' : 'Auto-translate to Telugu'}</button></div>
+      <details class="card-body" ${done ? '' : 'open'}><summary class="muted small" style="cursor:pointer">Show / edit the Telugu texts</summary>
+        <div class="stack" style="margin-top:12px">${keys.map((k) => `
+          <label class="field"><span>${esc(k.label)} <span class="muted small">— ${esc(k.en.replace(/\s+/g, ' ').slice(0, 70))}${k.en.length > 70 ? '…' : ''}</span></span>
+            ${k.long ? `<textarea rows="2" data-te="${esc(k.key)}" maxlength="${k.max}" placeholder="${esc(k.en)}">${esc(te[k.key] || '')}</textarea>`
+              : `<input class="input" data-te="${esc(k.key)}" maxlength="${k.max}" placeholder="${esc(k.en)}" value="${esc(te[k.key] || '')}" />`}</label>`).join('')}</div></details>`;
+    hydrateIcons(card);
+    card.querySelectorAll('[data-te]').forEach((el) => el.addEventListener('input', () => {
+      d.i18n = d.i18n || {}; d.i18n.te = d.i18n.te || {};
+      if (el.value.trim()) d.i18n.te[el.dataset.te] = el.value; else delete d.i18n.te[el.dataset.te];
+      markBuilderDirty();
+    }));
+    $('#te-auto').addEventListener('click', async (e) => {
+      const b = e.currentTarget; b.disabled = true; b.innerHTML = '<span class="spinner"></span> Translating…';
+      try {
+        const res = await api('POST', `/tenants/${state.tenantId}/translate`, { flow: d, onlyMissing: !!done });
+        d.i18n = { te: res.te }; markBuilderDirty(); renderTeluguCard();
+        toast('Telugu ready — check it, then Save & publish', res.skipped?.length ? `${res.skipped.length} text(s) were too long for WhatsApp or lost a {placeholder} — they stay in English; you can type them in.` : 'Every text was translated.', { timeout: 9000 });
+      } catch (x) { toast('Could not translate', x.message, { kind: 'error' }); b.disabled = false; b.textContent = 'Auto-translate to Telugu'; }
+    });
   }
 
   /** <option>s for picking a product/service (only ones with photos when photosOnly). */

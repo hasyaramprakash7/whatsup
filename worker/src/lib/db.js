@@ -60,6 +60,7 @@ const LEAD_COLS = {
   adminAlertStatus: 'admin_alert_status', adminAlertAt: 'admin_alert_at', adminAlertMessageId: 'admin_alert_message_id', adminAlertError: 'admin_alert_error',
   lastMessageAt: 'last_message_at', lastMessagePreview: 'last_message_preview', lastMessageDirection: 'last_message_direction',
   lastMessageSentBy: 'last_message_sent_by', lastInboundAt: 'last_inbound_at', unreadCount: 'unread_count', botPaused: 'bot_paused',
+  language: 'language',
 };
 const leadValue = (k, v) => (k === 'data' ? JSON.stringify(v || {}) : k === 'botPaused' ? (v ? 1 : 0) : v instanceof Date ? v.toISOString() : v ?? null);
 

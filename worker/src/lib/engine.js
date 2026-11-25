@@ -9,6 +9,7 @@ import { upsertLead, recentTurns, takeAiReply, listCatalog, itemCaption, layoutO
 import { publish } from './chatlog.js';
 import { detailsShort, hasPin, areasOf, inArea } from './itemfields.js';
 import { geocode, reverseGeocode, distanceKm, kmLabel, mapsLink } from './geo.js';
+import { detectLanguage, ui, DEFAULT_MESSAGES_TE } from './lang.js';
 
 const RESEND_EVERY_MS = 10 * 60 * 1000;
 const MAX_UNEXPECTED = 2;             // re-ask this many times, then hand over to a person
@@ -33,20 +34,20 @@ export function isOptOut(message) {
 }
 
 /** "ok", "thanks", "👍" and similar: nothing to answer, so the bot doesn't keep replying to them. */
-const ACK_TEXTS = new Set(['ok', 'okay', 'okk', 'okkk', 'ok ok', 'k', 'kk', 'fine', 'cool', 'great', 'nice', 'sure', 'done', 'got it', 'noted', 'alright', 'hmm', 'hm', 'yes', 'yeah', 'yep', 'thanks', 'thank you', 'thankyou', 'thanx', 'thnx', 'thx', 'ty', 'tq', 'ok thanks', 'ok thank you', 'okay thanks', 'thanks a lot', 'welcome', 'bye', 'good', 'perfect', 'super']);
+const ACK_TEXTS = new Set(['సరే', 'సరేనండి', 'ఓకే', 'థాంక్స్', 'థ్యాంక్స్', 'ధన్యవాదాలు', 'sare', 'saree', 'ok andi', 'sare andi', 'thanks andi', 'ok', 'okay', 'okk', 'okkk', 'ok ok', 'k', 'kk', 'fine', 'cool', 'great', 'nice', 'sure', 'done', 'got it', 'noted', 'alright', 'hmm', 'hm', 'yes', 'yeah', 'yep', 'thanks', 'thank you', 'thankyou', 'thanx', 'thnx', 'thx', 'ty', 'tq', 'ok thanks', 'ok thank you', 'okay thanks', 'thanks a lot', 'welcome', 'bye', 'good', 'perfect', 'super']);
 export function isAck(message) {
   if (message?.type === 'reaction') return true;
   if (message?.type !== 'text') return false;
   const raw = (message.text?.body || '').trim();
   if (raw && !/[\p{L}\p{N}]/u.test(raw)) return true; // only emoji / punctuation
-  return ACK_TEXTS.has(raw.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim());
+  return ACK_TEXTS.has(raw.toLowerCase().replace(/[^\p{L}\p{M}\p{N}\s]/gu, ' ').replace(/\s+/g, ' ').trim());
 }
 
 const REASK_AFTER_MS = 15 * 60 * 1000; // repeat a waiting question after an AI answer only if asked longer ago
 // "Can I visit?", "book a slot", "schedule", "appointment" … in a finished chat → offer the visit times again.
-const BOOK_INTENT = /\b(book|booking|visit|site ?visit|schedule|slot|appointment|come and see|come to see|meet|demo|reserve)\b/i;
+const BOOK_INTENT = /\b(book|booking|visit|site ?visit|schedule|slot|appointment|come and see|come to see|meet|demo|reserve|chudali|choodali|ravacha|ravocha|chudocha)\b|విజిట్|బుక్|షెడ్యూల్|అపాయింట్|చూడాలి|చూడొచ్చా|చూడవచ్చా|రావచ్చా|రావొచ్చా/i;
 // "Hi", "hello", "start"… → the guided steps (a fresh start after a booking or a long pause), not AI small talk.
-const GREETING = /^(h+i+|h+e+l+o+|hlo|helo|hai|hey+|hiya|namaste|namaskar(am)?|vanakkam|good (morning|afternoon|evening|day)|start|restart|menu|hi there|hello there|hii there)[\s!.,?🙏👋😊]*$/iu;
+const GREETING = /^(h+i+|h+e+l+o+|hlo|helo|hai|hey+|hiya|namaste|namasthe|namaskar(am)?|vanakkam|good (morning|afternoon|evening|day)|start|restart|menu|hi there|hello there|hii there|hi andi|hello andi|నమస్తే|నమస్కారం|నమస్కారమండి|హాయ్|హాయ్ అండి|హలో|హలో అండి)[\s!.,?🙏👋😊]*$/iu;
 const RESTART_AFTER_MS = 30 * 60 * 1000;
 const isGreeting = (m) => m?.type === 'text' && GREETING.test((m.text?.body || '').trim());
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/;
@@ -62,6 +63,7 @@ export class Conversation {
     this.flow.steps = this.flow.steps || [];
     this.messages = { ...DEFAULT_MESSAGES, ...(this.flow.messages || {}) };
     this.aiCfg = ctx.tenant.ai || {};
+    this.lang = ctx.lead?.language || null; // 'en' | 'te' | null (not known yet)
     // Photos, brochures and map pins take WhatsApp longer to deliver than text, so a question sent right after
     // can land ABOVE the photo on the customer's phone. Meta's advice: wait for "delivered" before the next one.
     for (const c of [this.bot, this.ai]) {
@@ -82,7 +84,53 @@ export class Conversation {
   }
   // Anything still empty shows as "—" instead of a raw {placeholder}.
   t(text, extra) { return fill(text, this.vars(extra)).replace(/\{(\w+)\}/g, '—'); }
-  msg(key) { return this.t(this.messages[key]); }
+  /** A standard message in the customer's language (the business's own Telugu, else the standard Telugu one). */
+  msg(key) {
+    if (this.lang === 'te') {
+      const own = this.flow.i18n?.te?.[`m.${key}`];
+      const standard = this.messages[key] === DEFAULT_MESSAGES[key] ? DEFAULT_MESSAGES_TE[key] : null;
+      if (own || standard) return this.t(own || standard);
+    }
+    return this.t(this.messages[key]);
+  }
+  /** The bot's fixed texts in the customer's language. */
+  get U() { return ui(this.lang); }
+  /** The business's Telugu for one flow text (key from lang.flowStrings), else the English. */
+  tr(key, english) { return (this.lang === 'te' && this.flow.i18n?.te?.[key]) || english; }
+  /** A step with its texts in the customer's language (a step with its own one-off text keeps that text). */
+  L(step) {
+    if (this.lang !== 'te' || !step) return step;
+    const k = (f) => this.tr(`s.${step.id}.${f}`, step[f]);
+    const out = { ...step, text: step._custom ? step.text : k('text') };
+    if (step.type === 'choice') {
+      Object.assign(out, { listHeader: k('listHeader'), listButton: k('listButton'), listSection: k('listSection') });
+      out.options = (step.options || []).map((o) => ({ ...o, title: this.tr(`o.${step.id}.${o.id}.title`, o.title), description: this.tr(`o.${step.id}.${o.id}.description`, o.description) }));
+    }
+    return out;
+  }
+  /** Remembers the customer's language on their lead (a clear signal or their own choice). */
+  async setLang(lang) {
+    if (!lang || lang === this.lang) return;
+    this.lang = lang;
+    await this.saveLead({ set: { language: lang } });
+  }
+  /** "Please choose your language" with English / తెలుగు buttons (only when we can't tell). */
+  async askLanguage() {
+    this.state.awaitingLang = true;
+    return this.bot.buttons(this.phone, ui('en').chooseLanguage, [{ id: 'LANG_en', title: 'English' }, { id: 'LANG_te', title: 'తెలుగు' }]);
+  }
+  /** After the language is known: carry on with the waiting question, or start the guided steps. */
+  async continueInLanguage() {
+    this.state.awaitingLang = false;
+    const flowOn = this.flow.enabled !== false && this.flow.steps.length > 0;
+    if (!flowOn) return this.touch();
+    const current = this.state.stepId && stepById(this.flow, this.state.stepId);
+    if (current && !this.state.done) { await this.ask(current); return this.touch(); }
+    this.state = freshState();
+    await this.raiseStatus('ENGAGED');
+    await this.advance(null);
+    return this.touch();
+  }
 
   async saveLead(opts) {
     this.lead = await upsertLead(this.env, this.tenant._id, this.phone, opts);
@@ -159,9 +207,9 @@ export class Conversation {
     const fit = (s, n) => (s.length > n ? `${s.slice(0, n - 1).trim()}…` : s);
     try {
       await client.list(this.phone, {
-        body: (body || 'Tap below to see photos and prices 👇').slice(0, 1024),
-        button: 'View photos',
-        sections: [{ title: 'Tap one to see it', rows: list.map((it) => ({ id: `ITEM_${it._id}`, title: fit(it.name, 24), description: fit([it.km != null && `${kmLabel(it.km)} away`, it.price, detailsShort(it), it.description].filter(Boolean).join(' · ').replace(/\s+/g, ' '), 72) || undefined })) }],
+        body: (body || this.U.photosBody).slice(0, 1024),
+        button: this.U.photosButton,
+        sections: [{ title: this.U.photosSection, rows: list.map((it) => ({ id: `ITEM_${it._id}`, title: fit(it.name, 24), description: fit([it.km != null && this.U.away(kmLabel(it.km)), it.price, detailsShort(it), it.description].filter(Boolean).join(' · ').replace(/\s+/g, ' '), 72) || undefined })) }],
       });
     } catch (e) { console.warn('[Flow] item list failed', e.message); }
   }
@@ -189,12 +237,25 @@ export class Conversation {
       return freshState();
     }
 
+    // Language: the customer's choice (buttons, or typing "Telugu"/"English"), or a clear signal in what they wrote
+    // (Telugu letters, Tenglish words, an English sentence). "hi", "ok", numbers and button taps keep the current one.
+    if (iid === 'LANG_en' || iid === 'LANG_te') { await this.setLang(iid.slice(5)); return this.continueInLanguage(); }
+    const said = message.type === 'text' ? detectLanguage(textOf(message)) : null;
+    if (said) {
+      await this.setLang(said.lang);
+      if (said.explicit || this.state.awaitingLang) return this.continueInLanguage();
+    } else if (this.state.awaitingLang && !isGreeting(message)) {
+      // Didn't pick a language and nothing tells us: carry on in English rather than asking again (each message costs).
+      await this.setLang('en');
+      return this.continueInLanguage();
+    }
+
     // Tapped a product in a photo list: send that one photo. Where they are in the flow doesn't change,
     // and the question above stays tappable, so nothing is repeated (each message costs money).
     if (iid?.startsWith('ITEM_')) {
       const it = await this.item(iid.slice(5));
       if (it) { await this.rememberItem(it); await this.sendItem(it); await this.offerVisitFor(it); }
-      else await this.bot.text(this.phone, 'Sorry, that one is no longer available.').catch(() => {});
+      else await this.bot.text(this.phone, this.U.itemGone).catch(() => {});
       return this.touch();
     }
 
@@ -202,9 +263,7 @@ export class Conversation {
     if (message.unclear) {
       const again = Date.now() - (this.state.unclearAt || 0) < 10 * 60 * 1000;
       this.state.unclearAt = Date.now();
-      await this.bot.text(this.phone, again
-        ? "Sorry, I still couldn't hear that clearly 🙏 Please type your message — I'll reply right away."
-        : "Sorry, I couldn't hear that voice note clearly 🙏 Could you please type it, or send it again speaking a little slowly?").catch(() => {});
+      await this.bot.text(this.phone, again ? this.U.voiceUnclearAgain : this.U.voiceUnclear).catch(() => {});
       return this.touch();
     }
 
@@ -214,7 +273,7 @@ export class Conversation {
     if (message.type === 'unsupported' && (this.state.stepId || this.state.done)) {
       if (!this.state.resendAskedAt || Date.now() - this.state.resendAskedAt > RESEND_EVERY_MS) {
         this.state.resendAskedAt = Date.now();
-        await this.bot.text(this.phone, "Sorry, we couldn't open that message 🙏 Please send it again as a text, photo, voice note or document.").catch(() => {});
+        await this.bot.text(this.phone, this.U.unsupported).catch(() => {});
       }
       return this.touch();
     }
@@ -228,6 +287,7 @@ export class Conversation {
         const current = this.state.stepId && stepById(this.flow, this.state.stepId);
         if (current && !this.state.done && !idle) { await this.ask(current); return this.touch(); } // carry on where they were
         this.state = freshState();
+        if (!this.lang) { await this.askLanguage(); return this.touch(); } // first time and we can't tell: ask once
         await this.raiseStatus('ENGAGED');
         await this.advance(null);
         return this.touch();
@@ -238,6 +298,7 @@ export class Conversation {
         // A quick-reply button on the broadcast template can answer the first question directly.
         if (iid && first.type === 'choice' && first.options.some((o) => o.id === iid)) this.state.stepId = first.id;
         else if (this.state.done) { await this.afterFlow(message); return this.touch(); }
+        else if (!this.lang) { await this.askLanguage(); return this.touch(); }
         else { await this.raiseStatus('ENGAGED'); await this.advance(null); return this.touch(); }
       }
 
@@ -246,7 +307,7 @@ export class Conversation {
 
       const r = step.type === 'question' && step.input === 'location' ? await this.answerLocation(message) : this.answer(step, message);
       if (r?.prompted) { // "Other location": ask for a pin or a pincode, stay on this step
-        await this.bot.locationRequest(this.phone, 'Tap *Send location* below, or type your pincode or area name 📍').catch(() => {});
+        await this.bot.locationRequest(this.phone, this.U.locationPrompt).catch(() => {});
       } else if (r?.location) {
         await this.unexpected(step, message, false); // not a place we know: the AI may still match it to one of our areas
       } else if (r?.passed) {
@@ -282,6 +343,7 @@ export class Conversation {
   /** Sends the question for a step that waits for an answer. */
   async ask(step) {
     this.state.askedAt = Date.now(); this.state.askedStep = step.id;
+    step = this.L(step);
     const text = this.t(step.text);
     if (step.type === 'choice') {
       const photo = (await this.item(step.imageItemId))?.imageUrl || null;
@@ -290,14 +352,14 @@ export class Conversation {
         // WhatsApp lists can't carry a photo, so it goes just before the list.
         if (photo) await this.bot.image(this.phone, photo).catch((e) => console.warn('[Flow] photo failed', e.message));
         return this.bot.list(this.phone, {
-          header: this.t(step.listHeader || 'Choose an option'), body: text, button: this.t(step.listButton || 'View options'),
-          sections: [{ title: this.t(step.listSection || 'Options'), rows: step.options.map((o) => ({ id: o.id, title: o.title, ...(o.description ? { description: o.description } : {}) })) }],
+          header: this.t(step.listHeader || this.U.listHeader), body: text, button: this.t(step.listButton || this.U.listButton),
+          sections: [{ title: this.t(step.listSection || this.U.listSection), rows: step.options.map((o) => ({ id: o.id, title: o.title, ...(o.description ? { description: o.description } : {}) })) }],
         });
       }
       return this.bot.buttons(this.phone, text, step.options.map((o) => ({ id: o.id, title: o.title })), photo);
     }
     if (step.type === 'slots') {
-      const slots = buildVisitSlots(new Date(), 3, step.plan);
+      const slots = buildVisitSlots(new Date(), 3, step.plan, this.lang);
       return this.bot.buttons(this.phone, text, slots.map((s) => ({ id: s.id, title: s.title })));
     }
     if (step.type === 'question' && step.input === 'location') {
@@ -306,10 +368,10 @@ export class Conversation {
         // Our locations to pick from; typing a pincode/area or choosing "Other location" also works.
         const fit = (s, n) => (s.length > n ? `${s.slice(0, n - 1).trim()}…` : s);
         return this.bot.list(this.phone, {
-          header: 'Our locations', body: text, button: 'Choose area',
-          sections: [{ title: 'Areas', rows: [
-            ...areas.map((a) => ({ id: `AREA_${a.key}`.slice(0, 200), title: fit(a.name, 24), description: fit([`${a.count} ${a.count === 1 ? 'project' : 'projects'}`, a.pincodes.join(', ')].filter(Boolean).join(' · '), 72) })),
-            { id: 'LOC_OTHER', title: '📍 Other location', description: 'Share your location or type a pincode' },
+          header: this.U.areasHeader, body: text, button: this.U.areasButton,
+          sections: [{ title: this.U.areasSection, rows: [
+            ...areas.map((a) => ({ id: `AREA_${a.key}`.slice(0, 200), title: fit(a.name, 24), description: fit([this.U.projects(a.count), a.pincodes.join(', ')].filter(Boolean).join(' · '), 72) })),
+            { id: 'LOC_OTHER', title: this.U.otherLocation, description: this.U.otherLocationHint },
           ] }],
         }).catch(() => this.bot.locationRequest(this.phone, text));
       }
@@ -342,7 +404,7 @@ export class Conversation {
     if (want) keep((it) => { const c = String(it?.details?.config || '').toLowerCase(); return !c || want.includes(c) || c.includes(want); }); // '4 BHK / Villa' matches '4 BHK' and 'Villa'
     const options = opts.map((o, i) => ({ ...o, _i: i, _km: km(o) }))
       .sort((a, b) => (a._km ?? Infinity) - (b._km ?? Infinity) || a._i - b._i)
-      .map(({ _i, _km, ...o }) => (_km != null ? { ...o, description: [`${kmLabel(_km)} away`, o.description].filter(Boolean).join(' · ').slice(0, 72) } : o));
+      .map(({ _i, _km, ...o }) => (_km != null ? { ...o, description: [this.U.away(kmLabel(_km)), o.description].filter(Boolean).join(' · ').slice(0, 72) } : o));
     return { ...step, options };
   }
 
@@ -398,6 +460,7 @@ export class Conversation {
   }
 
   async sendContent(step) {
+    step = this.L(step);
     const p = this.tenant.profile || {};
     const business = p.displayName || this.tenant.businessName;
     if (step.kind === 'document') {
@@ -448,7 +511,10 @@ export class Conversation {
 
   async finish(step) {
     const chosen = await this.item(this.state.itemId);
-    await this.bot.text(this.phone, this.t(step.text, { address: this.siteAddress(chosen) }));
+    const extra = { address: this.siteAddress(chosen) };
+    const visit = this.visitStep();
+    if (this.lang === 'te' && visit?.field && this.lead?.bookedAt) extra[visit.field] = formatSlotLong(new Date(this.lead.bookedAt), 'te');
+    await this.bot.text(this.phone, this.t(this.L(step).text, extra));
     await this.raiseStatus('CONVERTED');
     this.state.stepId = null;
     this.state.done = true;
@@ -473,7 +539,8 @@ export class Conversation {
     const text = textOf(message).trim();
     if (step.type === 'choice') {
       const lower = text.toLowerCase();
-      const opt = step.options.find((o) => o.id === iid) || (text && step.options.find((o) => o.title.toLowerCase() === lower || o.label.toLowerCase() === lower));
+      const te = this.L(step).options || [];
+      const opt = step.options.find((o) => o.id === iid) || (text && step.options.find((o, i) => o.title.toLowerCase() === lower || o.label.toLowerCase() === lower || te[i]?.title?.toLowerCase() === lower));
       return opt ? { value: opt.label, next: opt.next, itemId: opt.itemId || null } : null;
     }
     if (step.type === 'slots') {
@@ -513,8 +580,9 @@ export class Conversation {
   }
 
   pendingFor(step) {
+    step = this.L(step);
     if (step.type === 'choice') return { question: this.t(step.text), options: step.options.map((o) => ({ id: o.id, title: o.title })) };
-    if (step.type === 'slots') return { slots: true, question: this.t(step.text), options: buildVisitSlots(new Date(), 3, step.plan).map((s) => ({ id: s.id, title: s.title })) };
+    if (step.type === 'slots') return { slots: true, question: this.t(step.text), options: buildVisitSlots(new Date(), 3, step.plan, this.lang).map((s) => ({ id: s.id, title: s.title })) };
     if (step.input === 'location') return { question: this.t(step.text), options: areasOf(this._catalog || []).map((a) => ({ id: `AREA_${a.key}`, title: [a.name, ...a.pincodes].join(' ') })) };
     return { question: this.t(step.text), options: [] };
   }
@@ -528,7 +596,7 @@ export class Conversation {
     }
     if (!invalid && await this.aiAvailable(message)) {
       const pending = this.pendingFor(step);
-      const d = await aiDecide(this.env, { tenant: this.tenant, aiCfg: this.aiCfg, pending, catalog: await this.catalog(), customerPlace: this.customerPlace(), history: await recentTurns(this.env, this.tenant._id, this.phone) });
+      const d = await aiDecide(this.env, { tenant: this.tenant, aiCfg: this.aiCfg, pending, catalog: await this.catalog(), customerPlace: this.customerPlace(), history: await recentTurns(this.env, this.tenant._id, this.phone), language: this.lang });
       if (d?.action === 'select') {
         const fake = { type: 'interactive', interactive: { type: 'button_reply', button_reply: { id: d.optionId } } };
         const r = step.input === 'location' ? await this.answerLocation(fake) : this.answer(step, fake);
@@ -550,7 +618,7 @@ export class Conversation {
 
     this.state.unexpected = (this.state.unexpected || 0) + 1;
     if (this.state.unexpected <= MAX_UNEXPECTED) {
-      const tip = step.input === 'location' ? "Sorry, I couldn't find that place 🙏 Tap *Send location*, or type an area name or a 6-digit pincode." : this.msg(invalid || step.type === 'question' ? 'invalidInput' : 'nudge');
+      const tip = step.input === 'location' ? this.U.locationNotFound : this.msg(invalid || step.type === 'question' ? 'invalidInput' : 'nudge');
       await this.bot.text(this.phone, tip);
       return this.ask(step);
     }
@@ -570,7 +638,7 @@ export class Conversation {
         this.reopenVisit(visit);
         if (req) return this.offerTime(visit, req);
         const it = await this.item(this.state.itemId);
-        return this.ask({ ...visit, text: `Sure! ${it ? `When would you like to ${this.visitWord()} *${it.name}*?` : `When would you like to ${this.visitWord()}?`} Pick a time below, or type the day and time you prefer 👇` });
+        return this.ask({ ...visit, _custom: true, text: this.U.askWhen(it?.name, this.visitWord() === 'visit') });
       }
     }
     if (isAck(message)) {
@@ -578,7 +646,7 @@ export class Conversation {
       return null;
     }
     if (this.aiCfg.answerAfterFlow !== false && await this.aiAvailable(message)) {
-      const d = await aiDecide(this.env, { tenant: this.tenant, aiCfg: this.aiCfg, pending: null, catalog: await this.catalog(), customerPlace: this.customerPlace(), history: await recentTurns(this.env, this.tenant._id, this.phone) });
+      const d = await aiDecide(this.env, { tenant: this.tenant, aiCfg: this.aiCfg, pending: null, catalog: await this.catalog(), customerPlace: this.customerPlace(), history: await recentTurns(this.env, this.tenant._id, this.phone), language: this.lang });
       if (d?.action === 'handoff') return (await this.unclearVoice(message)) || this.handoff(message, d.reply);
       const visitStep = this.visitStep();
       if (d?.requestedTime && visitStep) {
@@ -604,17 +672,17 @@ export class Conversation {
 
   /** The customer typed a day/time: one tap books exactly that, or say why not and show the times we have. */
   async offerTime(step, req) {
-    const listed = buildVisitSlots(new Date(), 3, step.plan);
+    const listed = buildVisitSlots(new Date(), 3, step.plan, this.lang);
+    const visit = this.visitWord() === 'visit';
     this.state.askedAt = Date.now(); this.state.askedStep = step.id; this.state.unexpected = 0;
     if (!req.error) {
       const others = listed.filter((s) => s.at.getTime() !== req.at.getTime()).slice(0, 2);
-      return this.bot.buttons(this.phone, `Yes, *${formatSlotLong(req.at)}* works 👍\nTap below to confirm your ${this.visitWord() === 'visit' ? 'site visit' : 'booking'}, or choose another time:`,
-        [{ id: `SLOT_${req.at.getTime()}`, title: ((t) => (`✅ ${t}`.length <= 20 ? `✅ ${t}` : t))(formatSlotShort(req.at)) }, ...others.map((s) => ({ id: s.id, title: s.title }))]);
+      return this.bot.buttons(this.phone, this.U.timeWorks(formatSlotLong(req.at, this.lang), visit),
+        [{ id: `SLOT_${req.at.getTime()}`, title: ((t) => (`✅ ${t}`.length <= 20 ? `✅ ${t}` : t))(formatSlotShort(req.at, new Date(), this.lang)) }, ...others.map((s) => ({ id: s.id, title: s.title }))]);
     }
     const h = this.visitHours(step);
-    const why = req.error === 'hours' ? `We arrange ${this.visitWord() === 'visit' ? 'site visits' : 'bookings'} between ${clockLabel(h.from)} and ${clockLabel(h.to)}.`
-      : req.error === 'soon' ? 'That time is a little too soon for us to arrange.' : 'We can book up to 60 days ahead.';
-    return this.bot.buttons(this.phone, `${why} Please pick one of these times, or type another day and time 👇`, listed.map((s) => ({ id: s.id, title: s.title })));
+    const why = req.error === 'hours' ? this.U.outsideHours(clockLabel(h.from), clockLabel(h.to), visit) : req.error === 'soon' ? this.U.tooSoon : this.U.tooFar;
+    return this.bot.buttons(this.phone, `${why} ${this.U.pickTimes}`, listed.map((s) => ({ id: s.id, title: s.title })));
   }
 
   /** Opened a project after their visit was booked (or while choosing a time): offer a visit for it. */
@@ -624,7 +692,7 @@ export class Conversation {
     if (Date.now() - (this.state.offeredAt || 0) < REASK_AFTER_MS) return; // one offer per 15 minutes (each message costs)
     this.state.offeredAt = Date.now();
     if (this.state.done) this.reopenVisit(visit);
-    await this.ask({ ...visit, text: `Would you like to ${this.visitWord()} *${it.name}*? 🏡 Pick a time below, or type the day and time you prefer:` });
+    await this.ask({ ...visit, _custom: true, text: this.U.offerVisit(it.name, this.visitWord() === 'visit') });
   }
 
   /**
@@ -636,7 +704,7 @@ export class Conversation {
     if (!message?.voice) return false;
     if (Date.now() - (this.state.voiceRetryAt || 0) < 10 * 60 * 1000) return false;
     this.state.voiceRetryAt = Date.now();
-    await this.bot.text(this.phone, "Sorry, I couldn't catch that voice note clearly 🙏 Could you please type it, or send the voice note again speaking a little slowly?");
+    await this.bot.text(this.phone, this.U.voiceRetry);
     return true;
   }
 

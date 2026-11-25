@@ -1,4 +1,5 @@
 // Appointment / visit slots with real dates, in the business's local time.
+import { timeWordsToEnglish } from './lang.js';
 // India has no daylight saving, so a fixed UTC offset is enough (SITE_UTC_OFFSET, default +05:30).
 let OFFSET_MIN = 330;
 /** Sets the UTC offset from the Worker env (called once per request). */
@@ -35,6 +36,11 @@ const MAX_DAYS_AHEAD = 60; // a tapped slot further out than this is treated as 
 const DAYS_SHORT = ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'];
 const DAYS_LONG = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'];
 const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+// Telugu: buttons ("రేపు, 11 AM", "శని 28 నవం, 4 PM") and full dates ("శనివారం, 28 నవంబర్ 2026, 4:00 PM").
+const TE_DAYS_SHORT = ['ఆది', 'సోమ', 'మంగళ', 'బుధ', 'గురు', 'శుక్ర', 'శని'];
+const TE_DAYS_LONG = ['ఆదివారం', 'సోమవారం', 'మంగళవారం', 'బుధవారం', 'గురువారం', 'శుక్రవారం', 'శనివారం'];
+const TE_MONTHS = ['జన', 'ఫిబ్ర', 'మార్చి', 'ఏప్రి', 'మే', 'జూన్', 'జులై', 'ఆగ', 'సెప్టె', 'అక్టో', 'నవం', 'డిసెం'];
+const TE_MONTHS_LONG = ['జనవరి', 'ఫిబ్రవరి', 'మార్చి', 'ఏప్రిల్', 'మే', 'జూన్', 'జులై', 'ఆగస్టు', 'సెప్టెంబర్', 'అక్టోబర్', 'నవంబర్', 'డిసెంబర్'];
 
 // A Date shifted so its getUTC* fields read as site-local wall-clock time.
 const toLocal = (date) => new Date(date.getTime() + OFFSET_MIN * 60000);
@@ -54,18 +60,26 @@ function sameLocalDay(a, b) {
 }
 
 /** Button title, at most 20 characters (WhatsApp limit): "Tomorrow, 11 AM" or "Sat 28 Nov, 4 PM". */
-function formatSlotShort(at, now = new Date()) {
+function formatSlotShort(at, now = new Date(), lang = 'en') {
   const local = toLocal(at);
   const today = toLocal(now);
   const tomorrow = toLocal(fromLocal(today.getUTCFullYear(), today.getUTCMonth(), today.getUTCDate() + 1));
+  if (lang === 'te') {
+    const time = formatTime(local, local.getUTCMinutes() !== 0);
+    if (sameLocalDay(local, today)) return `ఈరోజు, ${time}`;
+    if (sameLocalDay(local, tomorrow)) return `రేపు, ${time}`;
+    const t = `${TE_DAYS_SHORT[local.getUTCDay()]} ${local.getUTCDate()} ${TE_MONTHS[local.getUTCMonth()]}, ${time}`;
+    if (t.length <= 20) return t; // WhatsApp button limit; otherwise the English form below
+  }
   if (sameLocalDay(local, today)) return `Today, ${formatTime(local, local.getUTCMinutes() !== 0)}`;
   if (sameLocalDay(local, tomorrow)) return `Tomorrow, ${formatTime(local, false)}`;
   return `${DAYS_SHORT[local.getUTCDay()]} ${local.getUTCDate()} ${MONTHS[local.getUTCMonth()]}, ${formatTime(local, false)}`;
 }
 
 /** Full wording for messages and the dashboard: "Saturday, 28 Nov 2026 at 4:00 PM". */
-function formatSlotLong(at) {
+function formatSlotLong(at, lang = 'en') {
   const local = toLocal(at);
+  if (lang === 'te') return `${TE_DAYS_LONG[local.getUTCDay()]}, ${local.getUTCDate()} ${TE_MONTHS_LONG[local.getUTCMonth()]} ${local.getUTCFullYear()}, ${formatTime(local, true)}`;
   return `${DAYS_LONG[local.getUTCDay()]}, ${local.getUTCDate()} ${MONTHS[local.getUTCMonth()]} ${local.getUTCFullYear()} at ${formatTime(local, true)}`;
 }
 
@@ -74,7 +88,7 @@ function formatSlotLong(at) {
  * Walks forward day by day from tomorrow and takes every plan rule that matches the day
  * ('TOMORROW' only matches tomorrow), skipping duplicates, until `count` slots are found.
  */
-function buildVisitSlots(now = new Date(), count = 3, plan = DEFAULT_PLAN) {
+function buildVisitSlots(now = new Date(), count = 3, plan = DEFAULT_PLAN, lang = 'en') {
   const rules = (Array.isArray(plan) && plan.length ? plan : DEFAULT_PLAN).map((r) => {
     const [hour, minute] = String(r.time || '11:00').split(':').map(Number);
     return { day: String(r.day || '').toUpperCase(), hour: hour || 0, minute: minute || 0 };
@@ -98,7 +112,7 @@ function buildVisitSlots(now = new Date(), count = 3, plan = DEFAULT_PLAN) {
   return slots
     .sort((a, b) => a - b)
     .slice(0, count)
-    .map((at) => ({ id: `SLOT_${at.getTime()}`, title: formatSlotShort(at, now), at }));
+    .map((at) => ({ id: `SLOT_${at.getTime()}`, title: formatSlotShort(at, now, lang), at }));
 }
 
 /** Date for a tapped slot button id, or null if it is not one of ours (e.g. an old-format id). */
@@ -123,7 +137,8 @@ const hm = (s) => { const [h, m] = String(s).split(':').map(Number); return (h |
  * Hours without am/pm: 1–8 → PM (nobody visits a site at 4 AM), 9–12 as written.
  */
 function parseRequestedTime(text, now = new Date(), { from = '09:00', to = '19:00', leadMinutes = 60 } = {}) {
-  const s = ` ${String(text || '').toLowerCase().replace(/[’‘`]/g, "'").replace(/\s+/g, ' ')} `;
+  // Telugu / Tenglish day and time words ("రేపు మూడు గంటలకి", "repu moodu gantalaki") become English first.
+  const s = ` ${timeWordsToEnglish(String(text || '').replace(/[’‘`]/g, "'")).toLowerCase().replace(/\s+/g, ' ')} `;
   let h = null; let mi = 0; let mer = null; let m;
   if ((m = new RegExp(`(?<![\\d₹.])(\\d{1,2})[:.](\\d{2})\\s*(a\\.?m\\.?|p\\.?m\\.?)?${NOT_TIME}`).exec(s))) { h = +m[1]; mi = +m[2]; mer = m[3]; }
   else if ((m = /(?<![\d₹.])(\d{1,2})\s*(a\.?m\.?|p\.?m\.?)(?![a-z])/.exec(s))) { h = +m[1]; mer = m[2]; }
