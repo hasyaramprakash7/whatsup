@@ -42,7 +42,12 @@
   "migrations": [{ "tag": "v1", "new_sqlite_classes": ["ConversationDO", "BusinessHub"] }],
 
   // Brochures and other documents sent to customers.
-  "r2_buckets": [{ "binding": "MEDIA", "bucket_name": "rk-interior-media" }],
+  // MEDIA: public (product photos, brochures — WhatsApp fetches them by link).
+  // PRIVATE_MEDIA: customers' photos, voice notes and documents — no public link; read only through /api/media.
+  "r2_buckets": [
+    { "binding": "MEDIA", "bucket_name": "rk-interior-media" },
+    { "binding": "PRIVATE_MEDIA", "bucket_name": "whatsapp-agent-private" }
+  ],
 
   // Workers AI for the assistant.
   "ai": { "binding": "AI" },

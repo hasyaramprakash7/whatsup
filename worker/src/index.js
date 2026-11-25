@@ -15,7 +15,7 @@ import { TEMPLATES, flowFromTemplate, getTemplate, personalizeFlow } from './lib
 import { WhatsAppClient } from './lib/whatsapp.js';
 import { outboundRecorder, publish } from './lib/chatlog.js';
 import { aiDecide } from './lib/ai.js';
-import { MEDIA_FILE } from './lib/media.js';
+import { MEDIA_FILE, moveInboundToPrivate } from './lib/media.js';
 import { ITEM_FIELDS, cleanDetails, resolveMapPoint } from './lib/itemfields.js';
 import { geocode, reverseGeocode } from './lib/geo.js';
 import { pushConfigured, saveSubscription, deleteSubscription, getSubscription, sendPush, NOTIFY_KINDS, testPushPayload, markSent, recordAck, deliveryHealth } from './lib/push.js';
@@ -769,7 +769,8 @@ app.patch('/api/chats/:tid/:phone', tenantAccess(), phoneOk, async (c) => {
 app.get('/api/media/:tid/:file', tenantAccess(), async (c) => {
   const { tid, file } = c.req.param();
   if (!MEDIA_FILE.test(file)) return fail(c, 400, 'Invalid file name');
-  const obj = await c.env.MEDIA.get(`inbound/${tid}/${file}`);
+  const key = `inbound/${tid}/${file}`;
+  const obj = (c.env.PRIVATE_MEDIA && await c.env.PRIVATE_MEDIA.get(key)) || await c.env.MEDIA.get(key); // older files may not be moved yet
   if (!obj) return fail(c, 404, 'File not found');
   return new Response(obj.body, { headers: { 'Content-Type': obj.httpMetadata?.contentType || 'application/octet-stream', 'Content-Length': String(obj.size), 'Cache-Control': 'private, max-age=86400' } });
 });
@@ -785,5 +786,8 @@ app.get('/api/monitor', async (c) => {
 export default {
   fetch: app.fetch,
   // Every 10 minutes: check the bot is answering and alert the admin's phone if not.
-  scheduled: (event, env, ctx) => ctx.waitUntil(runMonitor(env).catch((err) => console.error('[Monitor] failed:', err.message))),
+  scheduled: (event, env, ctx) => ctx.waitUntil(Promise.all([
+    runMonitor(env).catch((err) => console.error('[Monitor] failed:', err.message)),
+    moveInboundToPrivate(env).catch((err) => console.error('[Media] move failed:', err.message)),
+  ])),
 };

@@ -19,6 +19,24 @@ const extOf = (mime, filename) => EXT[String(mime).split(';')[0].trim()] || (/\.
 const keyFor = (tenantId, mime, filename) => `inbound/${tenantId}/${crypto.randomUUID().replace(/-/g, '')}.${extOf(mime, filename)}`;
 export const MEDIA_FILE = /^[a-f0-9]{32}\.[a-z0-9]{1,6}$/;
 
+/**
+ * Moves customers' files saved before the private bucket existed (public bucket, inbound/…) into it.
+ * Runs in small batches from the 10-minute cron until none are left. Returns how many were moved.
+ */
+export async function moveInboundToPrivate(env, max = 100) {
+  if (!env.PRIVATE_MEDIA || !env.MEDIA) return 0;
+  const list = await env.MEDIA.list({ prefix: 'inbound/', limit: max });
+  let moved = 0;
+  for (const o of list.objects) {
+    const obj = await env.MEDIA.get(o.key);
+    if (!obj) continue;
+    await env.PRIVATE_MEDIA.put(o.key, await obj.arrayBuffer(), { httpMetadata: obj.httpMetadata });
+    if (await env.PRIVATE_MEDIA.head(o.key)) { await env.MEDIA.delete(o.key); moved++; }
+  }
+  if (moved) console.log(`[Media] moved ${moved} customer file(s) to private storage`);
+  return moved;
+}
+
 async function graphJson(env, accessToken, path) {
   const base = String(env.GRAPH_BASE_URL || 'https://graph.facebook.com').replace(/\/$/, '');
   const res = await fetch(`${base}/${env.GRAPH_API_VERSION || 'v25.0'}/${path}`, { headers: { Authorization: `Bearer ${accessToken}` } });
@@ -115,7 +133,8 @@ async function transcribe(env, bytes, voiceLanguage = 'te', context = '', custom
 export async function saveInboundMedia(env, { tenantId, accessToken, message, voiceLanguage, context, customerLanguage }) {
   const t = message?.type;
   const m = message?.[t];
-  if (!MEDIA_TYPES.includes(t) || !m?.id || !env.MEDIA) return null;
+  const store = env.PRIVATE_MEDIA || env.MEDIA; // customers' files go to the private bucket
+  if (!MEDIA_TYPES.includes(t) || !m?.id || !store) return null;
   try {
     const info = await graphJson(env, accessToken, m.id);
     if (Number(info.file_size) > MAX_BYTES) return { tooLarge: true, mime: info.mime_type, size: Number(info.file_size) };
@@ -124,7 +143,7 @@ export async function saveInboundMedia(env, { tenantId, accessToken, message, vo
     const bytes = await res.arrayBuffer();
     const mime = String(info.mime_type || m.mime_type || res.headers.get('content-type') || 'application/octet-stream').split(';')[0].trim();
     const key = keyFor(tenantId, mime, m.filename);
-    await env.MEDIA.put(key, bytes, { httpMetadata: { contentType: mime, cacheControl: 'private, max-age=31536000, immutable' } });
+    await store.put(key, bytes, { httpMetadata: { contentType: mime, cacheControl: 'private, max-age=31536000, immutable' } });
     let transcript = '';
     if (t === 'audio' || t === 'voice') {
       // If the speech engine fails or is too slow, treat it as unclear: the customer is asked to type or resend.
