@@ -48,6 +48,9 @@
           <label class="field"><span>API key</span>
             <input id="api-key" class="input" type="password" autocomplete="current-password" required placeholder="wre_… or admin key" />
           </label>
+          <label class="field" id="code-field" hidden><span>6-digit code from your authenticator app</span>
+            <input id="login-code" class="input" inputmode="numeric" autocomplete="one-time-code" maxlength="6" pattern="[0-9]{6}" placeholder="123456" />
+          </label>
           <label class="switch"><input type="checkbox" id="remember-me" checked /><span class="track"></span>Keep me signed in on this device</label>
           <button type="submit" class="btn primary" style="height:42px">Sign in</button>
           <p id="login-error" class="form-error" role="alert"></p>

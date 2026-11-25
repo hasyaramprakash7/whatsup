@@ -12,7 +12,7 @@
     "directory": "./public",
     "binding": "ASSETS",
     "not_found_handling": "single-page-application",
-    "run_worker_first": ["/api/*", "/webhook", "/webhook/*", "/ws", "/health", "/push/*"]
+    "run_worker_first": ["/api/*", "/webhook", "/webhook/*", "/ws", "/health", "/push/*", "/auth/*"]
   },
 
   // Abuse protection: per-address limits for the dashboard API and for wrong sign-in keys.

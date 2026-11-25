@@ -246,7 +246,14 @@
   // ============================================================
   // Session
   // ============================================================
+  let pendingKey = null; // the key of a sign-in that is waiting for its 2-step code
+  /** Back to step 1 of sign-in (key), e.g. after signing out or signing in. */
+  function resetLoginForm() {
+    $('#code-field').hidden = true; $('#login-code').value = '';
+    $('#api-key').required = true; $('#api-key').closest('.field').hidden = false;
+  }
   function showLogin(message = '') {
+    pendingKey = null; resetLoginForm();
     hideSplash();
     $('#shell').hidden = true; $('#login').hidden = false;
     $('#login-error').textContent = message;
@@ -259,16 +266,34 @@
     disconnectLive();
     showLogin(message);
   }
+  // Sign in: the key (and the 2-step code, when the key has it) is exchanged for a session; the key itself is not stored.
   $('#login-form').addEventListener('submit', async (e) => {
     e.preventDefault();
-    const key = $('#api-key').value.trim();
+    const key = $('#api-key').value.trim() || pendingKey;
     if (!key) return;
-    // Installed apps stay signed in (like any app); untick on a shared computer.
+    // Installed apps stay signed in (like any app: 30 days); untick on a shared computer (12 hours).
     const remember = $('#remember-me')?.checked !== false;
-    store.set(KEY_STORAGE, null, sessionStorage); store.set(KEY_STORAGE, null);
-    store.set(KEY_STORAGE, key, remember ? localStorage : sessionStorage);
-    $('#api-key').value = ''; $('#login-error').textContent = '';
-    await startSession();
+    const code = $('#login-code').value.trim();
+    const btn = e.submitter || $('#login-form button[type=submit]'); btn.disabled = true;
+    try {
+      const res = await fetch('/auth/session', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ key, code: code || undefined, remember }) });
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        if (data.needsCode) {
+          // Step 2: the key is remembered for this attempt; its box steps aside while the code is entered.
+          pendingKey = key; $('#code-field').hidden = false; $('#api-key').value = ''; $('#api-key').required = false;
+          $('#api-key').closest('.field').hidden = true; $('#login-code').value = ''; setTimeout(() => $('#login-code').focus(), 30);
+        }
+        $('#login-error').textContent = data.error || 'Could not sign in.';
+        return;
+      }
+      pendingKey = null; resetLoginForm();
+      store.set(KEY_STORAGE, null, sessionStorage); store.set(KEY_STORAGE, null);
+      store.set(KEY_STORAGE, data.token, remember ? localStorage : sessionStorage);
+      $('#api-key').value = ''; $('#login-error').textContent = '';
+      await startSession();
+    } catch { $('#login-error').textContent = 'No connection. Please try again.'; }
+    finally { btn.disabled = false; }
   });
   $('#logout').addEventListener('click', () => { log('Signed out.'); signOut(); });
   $('#menu-btn').addEventListener('click', () => $('#shell').classList.toggle('nav-open'));
@@ -668,9 +693,10 @@
     try { ({ auth: state.auth } = await api('GET', '/tenants/me')); }
     catch (err) { if (err.message !== 'Not signed in') showLogin(err.message); return; }
     $('#login').hidden = true; $('#shell').hidden = false;
-    $('#me-name').textContent = isAdmin() ? 'Administrator' : state.auth.businessName;
-    $('#me-role').textContent = isAdmin() ? 'All businesses' : 'Business account';
-    $('#me-avatar').outerHTML = avatar(isAdmin() ? 'Admin' : state.auth.businessName, 'me').replace('class="avatar ', 'id="me-avatar" class="avatar ');
+    const who = state.auth.memberName || (isAdmin() ? 'Administrator' : state.auth.businessName);
+    $('#me-name').textContent = who;
+    $('#me-role').textContent = state.auth.memberName ? `${state.auth.memberRole === 'agent' ? 'Agent' : 'Owner'} · ${isAdmin() ? 'all businesses' : state.auth.businessName}` : (isAdmin() ? 'All businesses' : 'Business account');
+    $('#me-avatar').outerHTML = avatar(who, 'me').replace('class="avatar ', 'id="me-avatar" class="avatar ');
     log(`Signed in as ${isAdmin() ? 'admin' : state.auth.businessName}.`, 'success');
     await loadTenants();
     // Opened from a notification for another business (admins): switch to it.
@@ -882,6 +908,7 @@
     settings: { title: 'Settings', icon: 'sliders', render: renderSettings },
     clients: { title: 'Businesses', icon: 'key', render: renderClients, admin: true },
     activity: { title: 'Activity log', icon: 'activity', render: renderActivity },
+    team: { title: 'Team & security', icon: 'shield', render: renderTeam },
   };
   function renderNav() {
     const link = (p, extra = '') => `<a href="#/${p}" data-page="${p}" title="${esc(PAGES[p].title)}">${icon(PAGES[p].icon)}<span>${PAGES[p].title}</span>${extra}</a>`;
@@ -889,7 +916,7 @@
       <div class="nav-label">Workspace</div>
       ${link('overview')}${link('inbox', `<span class="badge" id="nav-unread" ${state.unreadChats ? '' : 'hidden'}>${state.unreadChats}</span>`)}${link('leads')}${link('confirmed')}${link('broadcast')}
       <div class="nav-label">Configure</div>
-      ${link('flow')}${link('catalog')}${link('ai')}${link('profile')}${link('settings')}
+      ${link('flow')}${link('catalog')}${link('ai')}${link('profile')}${link('settings')}${link('team')}
       ${isAdmin() ? `<div class="nav-label">Admin</div>${link('clients')}` : ''}
       ${link('activity')}`;
     $$('#nav a').forEach((a) => a.addEventListener('click', () => $('#shell').classList.remove('nav-open')));
@@ -2630,6 +2657,94 @@
   // ============================================================
   // Activity log
   // ============================================================
+  // ============================================================
+  // Team & security: one key per person, roles, 2-step sign-in, who did what
+  // ============================================================
+  const teamState = { scope: null };
+  async function renderTeam() {
+    const scope = teamState.scope || (isAdmin() && !state.tenantId ? 'admin' : state.tenantId);
+    teamState.scope = scope;
+    $('#page').innerHTML = `<div class="page-inner"><div class="page-head"><div><h1>Team & security</h1><p>One key per person, 2-step sign-in, and a record of who did what.</p></div></div>
+      <div id="team-body"><div class="skeleton" style="height:200px"></div></div></div>`;
+    let d;
+    try { d = await api('GET', `/team/${scope}`); }
+    catch (x) { $('#team-body').innerHTML = `<div class="banner amber">${icon('info')}<div>${esc(x.message)}</div></div>`; return; }
+    const me = d.me || state.auth;
+    const when = (t) => (t ? new Date(t).toLocaleString() : '—');
+    const people = d.members.filter((m) => !m.revokedAt);
+    $('#team-body').innerHTML = `
+      ${isAdmin() ? `<div class="row wrap" style="gap:8px;margin-bottom:12px"><span class="muted small">Team of</span>
+        <select id="team-scope" style="width:auto">${state.tenantId ? `<option value="${esc(state.tenantId)}" ${scope === state.tenantId ? 'selected' : ''}>${esc(bizName())}</option>` : ''}<option value="admin" ${scope === 'admin' ? 'selected' : ''}>Bluxury staff (all businesses)</option></select></div>` : ''}
+      <div class="overview-grid"><div class="stack">
+        <div class="card"><div class="card-head"><span class="section-icon">${icon('users')}</span><div><h2>People</h2><p>Each person signs in with their own key. Removing someone signs them out everywhere at once.</p></div></div>
+          <div class="card-body stack">
+            ${people.length ? `<div class="table-wrap"><table class="table"><thead><tr><th>Name</th><th>Role</th><th>2-step</th><th>Last active</th><th></th></tr></thead><tbody>
+              ${people.map((m) => `<tr><td data-label="Name"><strong>${esc(m.name)}</strong>${m.id === me.memberId ? ' <span class="pill plain">You</span>' : ''}</td><td data-label="Role">${m.role === 'agent' ? 'Agent' : 'Owner'}</td>
+                <td data-label="2-step">${m.twoStep ? '<span class="pill d-READ">On</span>' : '<span class="pill plain">Off</span>'}</td><td data-label="Last active">${esc(when(m.lastUsedAt))}</td>
+                <td>${m.id === me.memberId ? '' : `<button class="btn sm ghost danger" data-revoke="${esc(m.id)}">${icon('trash', 'sm')}Remove</button>`}</td></tr>`).join('')}
+            </tbody></table></div>` : '<p class="muted">No personal keys yet — everyone uses the shared key. Add each person below.</p>'}
+            <form id="team-add" class="row wrap" style="gap:8px;align-items:flex-end">
+              <label class="field" style="flex:1;min-width:160px"><span>Name</span><input class="input" name="name" maxlength="60" required placeholder="e.g. Ravi (sales)" /></label>
+              <label class="field" style="width:auto"><span>Role</span><select name="role" style="width:auto"><option value="agent">Agent — inbox, leads, bookings</option><option value="owner">Owner — everything</option></select></label>
+              <button class="btn primary">${icon('plus', 'sm')}Add person</button></form>
+            <div id="team-new-key"></div>
+          </div></div>
+        ${scope !== 'admin' ? `<div class="card"><div class="card-head"><span class="section-icon amber">${icon('key')}</span><div><h2>Shared business key</h2><p>${d.sharedKeyOn ? 'On — anyone with it can sign in. Turn it off once everyone has a personal key.' : 'Off — only personal keys work.'}</p></div></div>
+          ${d.sharedKeyOn ? `<div class="card-body"><button class="btn danger" id="shared-off">${icon('key', 'sm')}Turn off the shared key</button><p class="hint">Needs at least one owner with a personal key. You can create a new shared key later in Settings.</p></div>` : ''}</div>` : ''}
+      </div><div class="stack">
+        <div class="card"><div class="card-head"><span class="section-icon green">${icon('shield')}</span><div><h2>Your 2-step sign-in</h2><p>A 6-digit code from an authenticator app (Google or Microsoft Authenticator) is needed to sign in, so a stolen key alone is useless.</p></div></div>
+          <div class="card-body stack" id="twostep">${!me.memberId ? '<p class="muted">You are signed in with a shared key. Ask an owner to add you here, sign in with your personal key, then turn this on.</p>'
+            : me.twoStep ? `<div class="banner green">${icon('check')}<div><strong>On</strong> for ${esc(me.memberName)}.</div></div><div class="row wrap" style="gap:8px"><input class="input" id="tfa-off-code" inputmode="numeric" maxlength="6" placeholder="Code to turn off" style="max-width:180px" /><button class="btn" id="tfa-off">Turn off</button></div>`
+            : `<button class="btn primary" id="tfa-start">${icon('shield', 'sm')}Turn on 2-step sign-in</button>`}</div></div>
+        <div class="card"><div class="card-head"><span class="section-icon">${icon('activity')}</span><div><h2>Who did what</h2><p>Sign-ins and every change, newest first.</p></div></div>
+          <div class="card-body">${d.activity.length ? `<ul class="activity-list" style="list-style:none;margin:0;padding:0;display:grid;gap:8px">${d.activity.map((a) => `<li><strong>${esc(a.actor)}</strong> — ${esc(a.action)}${a.detail ? ` <span class="muted small">(${esc(a.detail)})</span>` : ''}<br><span class="muted small">${esc(when(a.at))}</span></li>`).join('')}</ul>` : '<p class="muted">Nothing yet.</p>'}</div></div>
+      </div></div>`;
+    hydrateIcons($('#team-body'));
+    $('#team-scope')?.addEventListener('change', (e) => { teamState.scope = e.target.value; renderTeam(); });
+    $('#team-add').addEventListener('submit', async (e) => {
+      e.preventDefault(); const f = e.currentTarget;
+      try {
+        const { key, member } = await api('POST', `/team/${scope}`, { name: f.name.value.trim(), role: f.role.value });
+        $('#team-new-key').innerHTML = `<div class="banner green">${icon('key')}<div><strong>Key for ${esc(member.name)} — copy it now, it is shown only once.</strong>
+          <div class="row" style="gap:8px;margin-top:8px"><input class="input" readonly value="${esc(key)}" id="new-key" /><button class="btn" id="copy-key" type="button">${icon('copy', 'sm')}Copy</button></div>
+          <span class="hint">Send it to them privately. They sign in with it and can then turn on 2-step sign-in.</span></div></div>`;
+        hydrateIcons($('#team-new-key'));
+        $('#copy-key').addEventListener('click', () => { navigator.clipboard?.writeText(key); toast('Key copied'); });
+        f.reset();
+      } catch (x) { toast('Could not add', x.message, { kind: 'error' }); }
+    });
+    $$('[data-revoke]').forEach((b) => b.addEventListener('click', async () => {
+      if (!confirm('Remove this person? Their key stops working and they are signed out everywhere.')) return;
+      try { await api('DELETE', `/team/${scope}/${b.dataset.revoke}`); toast('Removed'); renderTeam(); } catch (x) { toast('Could not remove', x.message, { kind: 'error' }); }
+    }));
+    $('#shared-off')?.addEventListener('click', async () => {
+      if (!confirm('Turn off the shared key? Only personal keys will work. Anyone signed in with the shared key is signed out within 12 hours (or 30 days if they chose to stay signed in).')) return;
+      try { await api('POST', `/tenants/${scope}/shared-key/off`); toast('Shared key turned off'); renderTeam(); } catch (x) { toast('Could not turn off', x.message, { kind: 'error' }); }
+    });
+    $('#tfa-start')?.addEventListener('click', async () => {
+      try {
+        const { secret, uri } = await api('POST', '/me/2fa/start');
+        const box = $('#twostep');
+        box.innerHTML = `<ol style="margin:0;padding-left:18px;display:grid;gap:6px"><li>Open <strong>Google Authenticator</strong> or <strong>Microsoft Authenticator</strong> on your phone.</li>
+          <li>Scan this code, or add an account with the key <code style="word-break:break-all">${esc(secret)}</code> (on this phone: <a href="${esc(uri)}">open in the app</a>).</li><li>Type the 6-digit code it shows:</li></ol>
+          <div id="tfa-qr" style="margin:6px 0"></div>
+          <div class="row wrap" style="gap:8px"><input class="input" id="tfa-code" inputmode="numeric" maxlength="6" placeholder="123456" style="max-width:160px" /><button class="btn primary" id="tfa-confirm">Turn on</button></div>`;
+        try {
+          if (!window.qrcode) await new Promise((ok, no) => { const s = document.createElement('script'); s.src = 'https://unpkg.com/qrcode-generator@1.4.4/qrcode.js'; s.onload = ok; s.onerror = no; document.head.appendChild(s); });
+          const q = window.qrcode(0, 'M'); q.addData(uri); q.make(); $('#tfa-qr').innerHTML = q.createSvgTag({ cellSize: 4, margin: 2 });
+        } catch { /* the key and link above still work */ }
+        $('#tfa-confirm').addEventListener('click', async () => {
+          try { await api('POST', '/me/2fa/confirm', { code: $('#tfa-code').value.trim() }); state.auth.twoStep = true; toast('2-step sign-in is on', 'Next time you sign in you will be asked for a code.'); renderTeam(); }
+          catch (x) { toast('Not turned on', x.message, { kind: 'error' }); }
+        });
+      } catch (x) { toast('Could not start', x.message, { kind: 'error' }); }
+    });
+    $('#tfa-off')?.addEventListener('click', async () => {
+      try { await api('POST', '/me/2fa/disable', { code: $('#tfa-off-code').value.trim() }); state.auth.twoStep = false; toast('2-step sign-in is off'); renderTeam(); }
+      catch (x) { toast('Not turned off', x.message, { kind: 'error' }); }
+    });
+  }
+
   function renderActivity() {
     let logs = [];
     try { logs = JSON.parse(store.get(LOG_KEY)) || []; } catch { logs = []; }

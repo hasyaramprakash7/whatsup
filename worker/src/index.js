@@ -12,6 +12,8 @@ import { validateFlow, validateProfile, validateAi, flowFields } from './lib/flo
 import { translateFlow } from './lib/lang.js';
 import { recordEvent, findProblems, runMonitor } from './lib/monitor.js';
 import { forgetCustomer, applyRetention } from './lib/privacy.js';
+import { MEMBER_KEY_PREFIX, SESSION_PREFIX, ROLES, createMember, listMembers, getMember, memberByKey, revokeMember, memberAuth,
+  startTwoStep, confirmTwoStep, checkTwoStep, disableTwoStep, signSession, verifySession, audit, recentActivity, describeAction, agentMayDo } from './lib/team.js';
 import { TEMPLATES, flowFromTemplate, getTemplate, personalizeFlow } from './lib/templates.js';
 import { WhatsAppClient } from './lib/whatsapp.js';
 import { outboundRecorder, publish } from './lib/chatlog.js';
@@ -64,6 +66,15 @@ app.onError((err, c) => {
 // ---------------- auth ----------------
 async function resolveApiKey(env, key) {
   if (!key) return null;
+  if (key.startsWith(SESSION_PREFIX)) return verifySession(env, key);
+  if (key.startsWith(MEMBER_KEY_PREFIX)) {
+    const m = await memberByKey(env, key);
+    if (!m) return null;
+    if (m.totp_on) return { needsTwoStep: true }; // only through /auth/session, with the code
+    const t = m.tenant_id ? await getTenant(env, m.tenant_id) : null;
+    if (m.tenant_id && (!t || !t.isActive)) return null;
+    return memberAuth(m, t?.businessName || null);
+  }
   if (env.ADMIN_API_KEY && env.ADMIN_API_KEY.length >= 32 && await safeEqual(key, env.ADMIN_API_KEY)) return { role: 'admin' };
   if (key.startsWith(TENANT_KEY_PREFIX)) {
     const t = await getTenantByKeyHash(env, await sha256Hex(key));
@@ -82,8 +93,16 @@ app.use('/api/*', async (c, next) => {
     if (await limited(c.env.AUTH_LIMIT, `auth:${ip}`)) return fail(c, 429, 'Too many failed sign-in attempts. Try again in a minute.');
     return fail(c, 401, 'Missing or invalid API key. Send "Authorization: Bearer <key>".');
   }
+  if (auth.needsTwoStep) return fail(c, 401, 'This key uses 2-step sign-in. Sign in on the dashboard with your code.');
+  // Agents: inbox, leads and bookings; everything else (settings, flow, products, broadcasts, team) is for owners.
+  if (auth.memberRole === 'agent' && !agentMayDo(c.req.method, c.req.path)) return fail(c, 403, 'Your role (agent) can use the Inbox, Leads and Confirmed pages. Ask the business owner for this.');
   c.set('auth', auth);
-  return next();
+  await next();
+  // Activity log: every change, with who made it.
+  if (c.req.method !== 'GET' && c.res.status < 400 && !/^\/api\/(push|ws-ticket|me)\//.test(c.req.path) && !/\/read$/.test(c.req.path) && !/\/(preview|ai-test|translate)$/.test(c.req.path)) {
+    const seg = c.req.path.split('/')[3];
+    c.executionCtx.waitUntil(audit(c.env, auth, describeAction(c.req.method, c.req.path), '', isId(seg) ? seg : auth.tenantId || null));
+  }
 });
 const requireAdmin = (c, next) => (c.get('auth').role === 'admin' ? next() : fail(c, 403, 'Admin access required.'));
 /** Admins, or the business whose id is in the URL. */
@@ -94,6 +113,29 @@ const tenantAccess = (param = 'tid') => async (c, next) => {
   if (a.role === 'admin' || a.tenantId === id) return next();
   return fail(c, 403, 'You do not have access to this business.');
 };
+
+// ---------------- sign-in: a key (and 2-step code) → a session ----------------
+app.post('/auth/session', async (c) => {
+  const ip = clientIp(c);
+  if (await limited(c.env.AUTH_LIMIT, `signin:${ip}`)) return fail(c, 429, 'Too many sign-in attempts. Try again in a minute.');
+  const b = await c.req.json().catch(() => ({}));
+  const key = String(b.key || '').trim();
+  let auth = null;
+  if (key.startsWith(MEMBER_KEY_PREFIX)) {
+    const m = await memberByKey(c.env, key);
+    if (m) {
+      if (m.totp_on && !b.code) return c.json({ success: false, needsCode: true, error: 'Enter the 6-digit code from your authenticator app.' }, 401);
+      if (!(await checkTwoStep(c.env, m, b.code))) { await limited(c.env.AUTH_LIMIT, `auth:${ip}`); return c.json({ success: false, needsCode: true, error: 'That code is not right. Use the newest code in your authenticator app.' }, 401); }
+      const t = m.tenant_id ? await getTenant(c.env, m.tenant_id) : null;
+      if (!m.tenant_id || (t && t.isActive)) auth = memberAuth(m, t?.businessName || null);
+    }
+  } else if (!key.startsWith(SESSION_PREFIX)) auth = await resolveApiKey(c.env, key);
+  if (!auth) { await limited(c.env.AUTH_LIMIT, `auth:${ip}`); return fail(c, 401, 'That key is not valid.'); }
+  const hours = b.remember ? 24 * 30 : 12;
+  const token = await signSession(c.env, auth, hours);
+  await audit(c.env, auth, 'Signed in', b.remember ? 'kept signed in on this device' : '');
+  return c.json({ success: true, token, expiresAt: new Date(Date.now() + hours * 3600e3).toISOString(), auth });
+});
 
 // ---------------- health ----------------
 app.get('/health', async (c) => {
@@ -767,6 +809,64 @@ app.patch('/api/chats/:tid/:phone', tenantAccess(), phoneOk, async (c) => {
 });
 
 // Customer photos, voice notes, videos and documents (copied from WhatsApp to R2 when they arrive).
+// ---------------- team: one key per person, roles, 2-step sign-in, activity ----------------
+/** :scope is a business id, or "admin" for staff with access to every business (admins only). */
+const teamScope = async (c, next) => {
+  const scope = c.req.param('scope'); const a = c.get('auth');
+  if (scope === 'admin') return a.role === 'admin' ? next() : fail(c, 403, 'Admin access required.');
+  if (!isId(scope)) return fail(c, 400, 'Invalid business id');
+  if (a.role === 'admin' || a.tenantId === scope) return next();
+  return fail(c, 403, 'You do not have access to this business.');
+};
+const scopeTenant = (c) => (c.req.param('scope') === 'admin' ? null : c.req.param('scope'));
+app.get('/api/team/:scope', teamScope, async (c) => {
+  const tid = scopeTenant(c);
+  const t = tid ? await getTenant(c.env, tid) : null;
+  return c.json({ success: true, members: await listMembers(c.env, tid), activity: await recentActivity(c.env, tid), sharedKeyOn: tid ? !String(t?.apiKeyHash || '').startsWith('off:') : true, me: c.get('auth') });
+});
+app.post('/api/team/:scope', teamScope, async (c) => {
+  const b = await c.req.json().catch(() => ({}));
+  const name = String(b.name || '').trim(); const role = ROLES.includes(b.role) ? b.role : 'agent';
+  if (!name || name.length > 60) return fail(c, 400, 'Name: 1–60 characters.');
+  const { key, member } = await createMember(c.env, { tenantId: scopeTenant(c), name, role, createdBy: c.get('auth').memberName || null });
+  return c.json({ success: true, key, member });
+});
+app.delete('/api/team/:scope/:id', teamScope, async (c) => {
+  const m = await getMember(c.env, c.req.param('id'));
+  if (!m || (m.tenant_id || null) !== scopeTenant(c)) return fail(c, 404, 'Not found');
+  if (m.id === c.get('auth').memberId) return fail(c, 400, "You can't remove yourself.");
+  await revokeMember(c.env, m.id);
+  return c.json({ success: true });
+});
+/** Turns off the business's shared key, so only personal keys work (turn it on again with "rotate key"). */
+app.post('/api/tenants/:tid/shared-key/off', tenantAccess(), async (c) => {
+  const members = (await listMembers(c.env, c.req.param('tid'))).filter((m) => !m.revokedAt && m.role === 'owner');
+  if (!members.length) return fail(c, 400, 'Add at least one owner with a personal key first, so someone can still sign in.');
+  await c.env.DB.prepare('UPDATE tenants SET api_key_hash = ? WHERE id = ?').bind(`off:${crypto.randomUUID()}`, c.req.param('tid')).run();
+  return c.json({ success: true });
+});
+// Your own 2-step sign-in (personal keys only).
+const meMember = async (c) => (c.get('auth').memberId ? getMember(c.env, c.get('auth').memberId) : null);
+app.post('/api/me/2fa/start', async (c) => {
+  const m = await meMember(c); if (!m) return fail(c, 400, 'Sign in with your personal key to turn on 2-step sign-in.');
+  return c.json({ success: true, ...(await startTwoStep(c.env, m)) });
+});
+app.post('/api/me/2fa/confirm', async (c) => {
+  const m = await meMember(c); if (!m) return fail(c, 400, 'Sign in with your personal key first.');
+  const { code } = await c.req.json().catch(() => ({}));
+  if (!(await confirmTwoStep(c.env, m, code))) return fail(c, 400, 'That code is not right. Type the 6-digit code your authenticator app shows now.');
+  await audit(c.env, c.get('auth'), 'Turned on 2-step sign-in');
+  return c.json({ success: true });
+});
+app.post('/api/me/2fa/disable', async (c) => {
+  const m = await meMember(c); if (!m) return fail(c, 400, 'Sign in with your personal key first.');
+  const { code } = await c.req.json().catch(() => ({}));
+  if (!(await checkTwoStep(c.env, m, code))) return fail(c, 400, 'That code is not right.');
+  await disableTwoStep(c.env, m);
+  await audit(c.env, c.get('auth'), 'Turned off 2-step sign-in');
+  return c.json({ success: true });
+});
+
 /** Deletes everything about one customer (their request under data-protection law). */
 app.delete('/api/chats/:tid/:phone', tenantAccess(), phoneOk, async (c) => {
   const { tid, phone } = c.req.param();
